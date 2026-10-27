@@ -98,7 +98,7 @@ Observations from this example:
 
 #### Steps
 
-- [ ] Confirm `ECSandbox.jar` is present at the project root and that `.git/info/exclude` lists it. Run the example above through `verify` and confirm `OK`.
+- [x] Confirm `ECSandbox.jar` is present at the project root and that `.git/info/exclude` lists it. Run the example above through `verify` and confirm `OK`.
 - [ ] Write the generator as a single-file Java program, `Tools/GenVectors.java`, run with `java Tools/GenVectors.java` (no build step). It computes SHA-256 with `MessageDigest`, encodes with `StandardCharsets.UTF_8`, calls ECSandbox through `ProcessBuilder` (checking exit codes), and writes the vectors file. Field, scalar and point vectors are computed in the same program with `BigInteger`.
 - [ ] Generate a throwaway test key pair with `gen`. Only the public key goes into the vectors file; the private key is not committed. Never use or commit the authority's real private key.
 - [ ] Have the generator cross-check every signature with ECSandbox `verify` before writing it, and use `verify` to record the expected result for each derived invalid case. If ECSandbox's verdict differs from the expected result listed below (for example on high-s or a changed `v`), stop and report it to the user.
