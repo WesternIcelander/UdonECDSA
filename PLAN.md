@@ -65,7 +65,7 @@ UdonSharp constraints to design around:
 - [x] Confirm the installed VRChat SDK and UdonSharp versions and record them below.
 - [x] Create the folder structure and an assembly layout UdonSharp accepts.
 - [x] Check whether `System.Guid.NewGuid()` is exposed to Udon.
-- [ ] Check whether `System.Text.Encoding.UTF8` is exposed (informational only; the plan uses a manual encoder regardless).
+- [x] Check whether `System.Text.Encoding.UTF8` is exposed (informational only; the plan uses a manual encoder regardless).
 - [ ] Check whether `System.Diagnostics.Stopwatch` is exposed, for timing measurements.
 - [ ] Confirm `uint`/`ulong` overflow wraps in Udon the same way as in C# (unchecked), with a small play-mode test.
 
@@ -195,7 +195,7 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 - VRChat SDK version: Worlds SDK 3.10.5 (`com.vrchat.base` and `com.vrchat.worlds` 3.10.5, VPM resolver 0.1.29), Unity 2022.3.22f1.
 - UdonSharp version: bundled with `com.vrchat.worlds` 3.10.5 (`Integrations/UdonSharp`), not installed as a separate package.
 - `System.Guid.NewGuid()`: exposed. `NewGuid().ToString()` gives the lowercase "D" format in Udon, e.g. `bccee525-df6d-4611-9c88-7b56e31bf88c` (`GuidProbe`).
-- `Encoding.UTF8`:
+- `Encoding.UTF8`: exposed. `GetBytes` on a 2-byte, 3-byte and 4-byte (surrogate pair) character gives the expected 10 bytes (`Utf8Probe`). The plan still uses the manual encoder.
 - `Stopwatch`:
 - Integer overflow behaviour:
 
