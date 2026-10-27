@@ -115,7 +115,7 @@ Observations from this example:
 ### Phase 2: Testing harness
 
 - [x] Create an EditMode test path that exercises the library as plain C#, for fast correctness iteration. `Tests/VectorTests.cs` is one `UdonSharpBehaviour` holding all vector checks; the NUnit test `Tests/Editor/VectorTestsEditMode.cs` instantiates it and calls `RunAll()` as plain C#. Menu `Tools/Secp256k1Udon/Run EditMode Tests` runs it and logs `[EditModeTests] done: N passed, M failed`.
-- [ ] Create a play-mode Udon test behaviour that runs the same vectors inside the Udon VM and logs PASS/FAIL per case with a summary line.
+- [x] Create a play-mode Udon test behaviour that runs the same vectors inside the Udon VM and logs PASS/FAIL per case with a summary line. `VectorTests` runs from `Start` in `Tests/TestScene.unity` (rebuilt by `Tools/Secp256k1Udon/Build Test Scene`, which assigns `vectors.json`), reads the vectors with `VRCJson`, and logs `[VectorTests] done: N passed, M failed`. Later phases add their checks to `VectorTests`.
 - [ ] Treat the Udon run as authoritative. EditMode passing is necessary but not sufficient.
 
 ### Phase 3: Byte utilities

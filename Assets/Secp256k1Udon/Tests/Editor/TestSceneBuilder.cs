@@ -15,6 +15,7 @@ namespace Secp256k1Udon.Tests.Editor
     {
         private const string LibraryFolder = "Assets/Secp256k1Udon";
         private const string ScenePath = "Assets/Secp256k1Udon/Tests/TestScene.unity";
+        private const string VectorsPath = "Assets/Secp256k1Udon/Tests/Vectors/vectors.json";
         private const string WorldPrefabPath = "Packages/com.vrchat.worlds/Samples/UdonExampleScene/Prefabs/VRCWorld.prefab";
 
         [MenuItem("Tools/Secp256k1Udon/Build Test Scene")]
@@ -34,7 +35,12 @@ namespace Secp256k1Udon.Tests.Editor
             foreach (Type type in testTypes)
             {
                 var go = new GameObject(type.Name);
-                UdonSharpUndo.AddComponent(go, type);
+                UdonSharpBehaviour behaviour = UdonSharpUndo.AddComponent(go, type);
+                if (behaviour is VectorTests vectorTests)
+                {
+                    vectorTests.vectors = AssetDatabase.LoadAssetAtPath<TextAsset>(VectorsPath);
+                    UdonSharpEditorUtility.CopyProxyToUdon(vectorTests);
+                }
             }
 
             EditorSceneManager.SaveScene(scene, ScenePath);
