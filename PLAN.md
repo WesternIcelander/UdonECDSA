@@ -102,14 +102,15 @@ Observations from this example:
 - [x] Write the generator as a single-file Java program, `Tools/GenVectors.java`, run with `java Tools/GenVectors.java` (no build step). It computes SHA-256 with `MessageDigest`, encodes with `StandardCharsets.UTF_8`, calls ECSandbox through `ProcessBuilder` (checking exit codes), and writes the vectors file. Field, scalar and point vectors are computed in the same program with `BigInteger`.
 - [x] Generate a throwaway test key pair with `gen`. Only the public key goes into the vectors file; the private key is not committed. Never use or commit the authority's real private key.
 - [x] Have the generator cross-check every signature with ECSandbox `verify` before writing it, and use `verify` to record the expected result for each derived invalid case. If ECSandbox's verdict differs from the expected result listed below (for example on high-s or a changed `v`), stop and report it to the user.
-- [ ] Produce a vectors file in `Tests/` (JSON or a C# constants file) containing:
-  - [ ] The ECSandbox example above as a hash-level vector.
-  - [ ] SHA-256 vectors: empty string, `"abc"`, a 55-byte, a 56-byte, a 64-byte and a 1000-byte message, and strings with non-ASCII characters (including one outside the BMP).
-  - [ ] Field and scalar arithmetic vectors (mul, square, inverse) including edge values: 0, 1, p-1, n-1, values near 2^256.
-  - [ ] Point vectors: G, 2G, 3G, a random kG.
-  - [ ] At least 10 valid `(data, signatureHex)` pairs with the test public key. Include arbitrary `data` strings (empty, plain text, JSON, non-ASCII), since the library must not depend on the content.
-  - [ ] Invalid cases: modified `data` (one character), modified `r`, modified `s`, `r = 0`, `s = 0`, `r >= n`, `s >= n`, wrong public key, a high-s variant of a valid signature (expected: valid), `v` changed (expected: valid), malformed signature hex (wrong length, non-hex characters).
-  - [ ] Public key cases: valid uncompressed key, key not on the curve, wrong prefix byte, wrong length.
+- [x] Produce a vectors file in `Tests/` (JSON or a C# constants file) containing:
+  - [x] The ECSandbox example above as a hash-level vector.
+  - [x] SHA-256 vectors: empty string, `"abc"`, a 55-byte, a 56-byte, a 64-byte and a 1000-byte message, and strings with non-ASCII characters (including one outside the BMP).
+  - [x] Field and scalar arithmetic vectors (mul, square, inverse) including edge values: 0, 1, p-1, n-1, values near 2^256.
+  - [x] Point vectors: G, 2G, 3G, a random kG.
+  - [x] At least 10 valid `(data, signatureHex)` pairs with the test public key. Include arbitrary `data` strings (empty, plain text, JSON, non-ASCII), since the library must not depend on the content.
+  - [x] Invalid cases: modified `data` (one character), modified `r`, modified `s`, `r = 0`, `s = 0`, `r >= n`, `s >= n`, wrong public key, a high-s variant of a valid signature (expected: valid), `v` changed (expected: valid), malformed signature hex (wrong length, non-hex characters).
+  - [x] Public key cases: valid uncompressed key, key not on the curve, wrong prefix byte, wrong length.
+  - File: `Assets/Secp256k1Udon/Tests/Vectors/vectors.json` (ASCII, non-ASCII text as `\uXXXX`). Every entry with `data` also stores its expected `utf8` bytes. Beyond the list above it has field/scalar `add`, `sub` and `reduce` (for non-canonical values in [p, 2^256) and z in [n, 2^256)), unpaired-surrogate UTF-8 cases (U+FFFD), `doubleMul` vectors for u1·G + u2·Q (including the doubling and infinity cases), an n − s counterpart of every valid signature (`signatureFlips`), and uppercase-hex signatures and keys. Rerunning the generator makes a new key pair and new signatures. ECSandbox agreed with every expected result.
 
 ### Phase 2: Testing harness
 
