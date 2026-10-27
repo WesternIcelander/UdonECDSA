@@ -1,0 +1,24 @@
+{
+    "name": "Secp256k1Udon.Tests.Editor",
+    "references": [
+        "Secp256k1Udon",
+        "Secp256k1Udon.Tests",
+        "UdonSharp.Editor",
+        "UdonSharp.Runtime",
+        "VRC.Udon",
+        "VRC.Udon.Editor",
+        "VRC.SDKBase",
+        "VRC.SDK3"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

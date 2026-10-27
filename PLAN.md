@@ -63,7 +63,7 @@ UdonSharp constraints to design around:
 ### Phase 0: Project setup and SDK capability checks
 
 - [x] Confirm the installed VRChat SDK and UdonSharp versions and record them below.
-- [ ] Create the folder structure and an assembly layout UdonSharp accepts.
+- [x] Create the folder structure and an assembly layout UdonSharp accepts.
 - [ ] Check whether `System.Guid.NewGuid()` is exposed to Udon.
 - [ ] Check whether `System.Text.Encoding.UTF8` is exposed (informational only; the plan uses a manual encoder regardless).
 - [ ] Check whether `System.Diagnostics.Stopwatch` is exposed, for timing measurements.
