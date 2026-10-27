@@ -62,7 +62,7 @@ UdonSharp constraints to design around:
 
 ### Phase 0: Project setup and SDK capability checks
 
-- [ ] Confirm the installed VRChat SDK and UdonSharp versions and record them below.
+- [x] Confirm the installed VRChat SDK and UdonSharp versions and record them below.
 - [ ] Create the folder structure and an assembly layout UdonSharp accepts.
 - [ ] Check whether `System.Guid.NewGuid()` is exposed to Udon.
 - [ ] Check whether `System.Text.Encoding.UTF8` is exposed (informational only; the plan uses a manual encoder regardless).
@@ -192,8 +192,8 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 ## Phase 0 findings
 
-- VRChat SDK version:
-- UdonSharp version:
+- VRChat SDK version: Worlds SDK 3.10.5 (`com.vrchat.base` and `com.vrchat.worlds` 3.10.5, VPM resolver 0.1.29), Unity 2022.3.22f1.
+- UdonSharp version: bundled with `com.vrchat.worlds` 3.10.5 (`Integrations/UdonSharp`), not installed as a separate package.
 - `System.Guid.NewGuid()`:
 - `Encoding.UTF8`:
 - `Stopwatch`:
