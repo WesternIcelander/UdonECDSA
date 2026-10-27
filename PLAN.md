@@ -57,6 +57,7 @@ UdonSharp constraints to design around:
 - No user-defined structs, no generics, no operator overloading. Represent numbers as `uint[]` limbs and points as flat `uint[]` arrays with offsets.
 - Every extern call in Udon is expensive. Minimize operation count, and preallocate scratch buffers as fields instead of allocating arrays per operation.
 - Use 8 x 32-bit limbs (little-endian limb order) with `ulong` intermediates for products and carries. Cast to `ulong` before multiplying.
+- Narrowing casts are checked in Udon (see Phase 0 findings): always mask before narrowing, e.g. `(uint)(x & 0xFFFFFFFFUL)`, `(byte)(x & 0xFFu)`. An unmasked cast of an out-of-range value throws and halts the behaviour.
 
 ## Phases
 
@@ -67,7 +68,7 @@ UdonSharp constraints to design around:
 - [x] Check whether `System.Guid.NewGuid()` is exposed to Udon.
 - [x] Check whether `System.Text.Encoding.UTF8` is exposed (informational only; the plan uses a manual encoder regardless).
 - [x] Check whether `System.Diagnostics.Stopwatch` is exposed, for timing measurements.
-- [ ] Confirm `uint`/`ulong` overflow wraps in Udon the same way as in C# (unchecked), with a small play-mode test.
+- [x] Confirm `uint`/`ulong` overflow wraps in Udon the same way as in C# (unchecked), with a small play-mode test.
 
 ### Phase 1: Reference test vectors
 
@@ -197,7 +198,7 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 - `System.Guid.NewGuid()`: exposed. `NewGuid().ToString()` gives the lowercase "D" format in Udon, e.g. `bccee525-df6d-4611-9c88-7b56e31bf88c` (`GuidProbe`).
 - `Encoding.UTF8`: exposed. `GetBytes` on a 2-byte, 3-byte and 4-byte (surrogate pair) character gives the expected 10 bytes (`Utf8Probe`). The plan still uses the manual encoder.
 - `Stopwatch`: exposed (`StartNew`, `Stop`, `Elapsed`, `ElapsedTicks`, `Frequency`, 10 MHz). For a rough sense of Udon speed: a 10,000-iteration `sum += i` loop took 2.47 ms in the editor, about 0.25 µs per iteration (`StopwatchProbe`).
-- Integer overflow behaviour:
+- Integer overflow behaviour: arithmetic wraps like unchecked C#. `uint`, `ulong` and `int` add, subtract, multiply and shift all wrap, and the `(ulong)a * b` full product is correct (`Phase0Probe`, 15/15 pass). **Narrowing casts do not wrap.** Udon compiles them to checked `System.Convert` calls (`SystemConvert.__ToUInt32__SystemUInt64__SystemUInt32`), so `(uint)someUlong` with a value above `uint.MaxValue` throws "Value was either too large or too small for a UInt32" and halts the behaviour. Masking first works: `(uint)(x & 0xFFFFFFFFUL)`, `(byte)(x & 0xFFu)`. Expect the same for any other narrowing or sign-changing cast, e.g. `(uint)` of a negative `int`.
 
 ## Measurements
 
