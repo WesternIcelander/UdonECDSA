@@ -36,6 +36,7 @@ namespace Secp256k1Udon.Tests
                 CheckUtf8();
                 CheckLimbs();
                 CheckSha256();
+                CheckField();
             }
 
             done = true;
@@ -306,6 +307,180 @@ namespace Secp256k1Udon.Tests
             System.Array.Copy(wide, 5, middle, 0, 32);
             offsetOk &= Hex.Encode(middle) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
             Report("sha256 output at an offset", offsetOk, "digest or surrounding bytes wrong");
+        }
+
+        // Phase 5: field arithmetic mod p. Operands sit at odd offsets in one shared buffer. Binary ops run
+        // three ways (separate result, result over a, result over b), unary ops two ways (separate, in place),
+        // and the separate run also checks that the inputs were left alone.
+        private void CheckField()
+        {
+            CheckCompare();
+
+            uint[] buf = new uint[40];
+            ulong[] t = new ulong[U256.ProductScratchLength];
+            int slotA = 3;
+            int slotB = 13;
+            int slotR = 22;
+            int slotTmp = 31;
+            string[] ops = { "add", "sub", "mul", "sqr", "inv", "reduce" };
+            int[] cases = new int[ops.Length];
+            int[] bad = new int[ops.Length];
+            int sqrVsMul = 0;
+            int sqrVsMulBad = 0;
+
+            DataList list = GetList("field");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                string op = entry["op"].String;
+                int opIndex = -1;
+                for (int k = 0; k < ops.Length; k++)
+                {
+                    if (ops[k] == op) opIndex = k;
+                }
+                if (opIndex < 0)
+                {
+                    Report("field case " + i, false, "unknown op " + op);
+                    continue;
+                }
+                string a = entry["a"].String.ToLower();
+                string expected = entry["result"].String.ToLower();
+                DataToken bToken;
+                string b = entry.TryGetValue("b", TokenType.String, out bToken) ? bToken.String.ToLower() : null;
+                bool binary = opIndex <= 2;
+                string label = "field " + op + "(" + a + (binary ? ", " + b : "") + ")";
+                cases[opIndex]++;
+
+                if (op == "reduce")
+                {
+                    if (!LoadLimbs(a, buf, slotR)) { bad[opIndex]++; Report(label, false, "malformed operand"); continue; }
+                    U256.FieldReduce(buf, slotR);
+                    string got = LimbsHex(buf, slotR);
+                    if (got != expected) { bad[opIndex]++; Report(label, false, "expected " + expected + ", got " + got); }
+                    continue;
+                }
+
+                if (!LoadLimbs(a, buf, slotA) || (binary && !LoadLimbs(b, buf, slotB)))
+                {
+                    bad[opIndex]++;
+                    Report(label, false, "malformed operand");
+                    continue;
+                }
+
+                // Separate result.
+                ApplyField(opIndex, buf, slotA, slotB, slotR, slotTmp, t);
+                string sep = LimbsHex(buf, slotR);
+                bool inputsKept = LimbsHex(buf, slotA) == a && (!binary || LimbsHex(buf, slotB) == b);
+
+                // Result over a.
+                LoadLimbs(a, buf, slotR);
+                ApplyField(opIndex, buf, slotR, slotB, slotR, slotTmp, t);
+                string overA = LimbsHex(buf, slotR);
+
+                // Result over b.
+                string overB = expected;
+                if (binary)
+                {
+                    LoadLimbs(b, buf, slotR);
+                    ApplyField(opIndex, buf, slotA, slotR, slotR, slotTmp, t);
+                    overB = LimbsHex(buf, slotR);
+                }
+
+                if (sep != expected || overA != expected || overB != expected || !inputsKept)
+                {
+                    bad[opIndex]++;
+                    Report(label, false, "expected " + expected + ", got " + sep + " / over a " + overA
+                        + (binary ? " / over b " + overB : "") + (inputsKept ? "" : " (inputs modified)"));
+                }
+
+                // Square agrees with multiplying a value by itself, for every mul operand.
+                if (op == "mul")
+                {
+                    U256.FieldMul(buf, slotA, buf, slotA, buf, slotR, t);
+                    string mulSelf = LimbsHex(buf, slotR);
+                    U256.FieldSqr(buf, slotA, buf, slotR, t);
+                    string sqrSelf = LimbsHex(buf, slotR);
+                    sqrVsMul++;
+                    if (sqrSelf != mulSelf)
+                    {
+                        sqrVsMulBad++;
+                        Report("field sqr(" + a + ") vs mul(a, a)", false, "sqr " + sqrSelf + ", mul " + mulSelf);
+                    }
+                }
+            }
+
+            for (int k = 0; k < ops.Length; k++)
+            {
+                if (cases[k] == 0) Report("field " + ops[k], false, "no cases in vectors");
+                else if (bad[k] == 0) Report("field " + ops[k] + " (" + cases[k] + " cases)", true, "");
+            }
+            if (sqrVsMulBad == 0) Report("field sqr(a) equals mul(a, a) (" + sqrVsMul + " operands)", sqrVsMul > 0, "no cases");
+        }
+
+        private void ApplyField(int opIndex, uint[] buf, int ao, int bo, int ro, int tmpo, ulong[] t)
+        {
+            if (opIndex == 0) U256.FieldAdd(buf, ao, buf, bo, buf, ro);
+            else if (opIndex == 1) U256.FieldSub(buf, ao, buf, bo, buf, ro);
+            else if (opIndex == 2) U256.FieldMul(buf, ao, buf, bo, buf, ro, t);
+            else if (opIndex == 3) U256.FieldSqr(buf, ao, buf, ro, t);
+            else if (opIndex == 4) U256.FieldInv(buf, ao, buf, ro, buf, tmpo, t);
+        }
+
+        // Phase 5: Compare, IsZero and the >= p test on hand-picked values.
+        private void CheckCompare()
+        {
+            uint[] buf = new uint[16];
+            CheckCompareCase("compare 0 vs 1", buf, "00", "01", -1);
+            CheckCompareCase("compare 1 vs 0", buf, "01", "00", 1);
+            CheckCompareCase("compare equal", buf, "fffffffefffffc2f", "fffffffefffffc2f", 0);
+            CheckCompareCase("compare top limb outranks low limbs", buf,
+                "0100000000000000000000000000000000000000000000000000000000000000",
+                "00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 1);
+            CheckCompareCase("compare differs in limb 0 only", buf,
+                "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2e",
+                "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", -1);
+
+            LoadLimbs("00", buf, 0);
+            LoadLimbs("0100000000000000000000000000000000000000000000000000000000000000", buf, 8);
+            Report("is zero", U256.IsZero(buf, 0) && !U256.IsZero(buf, 8), "wrong answer");
+
+            CheckGeP("p - 1 is below p", buf, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2e", false);
+            CheckGeP("p is not below p", buf, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", true);
+            CheckGeP("2^256 - 1 is not below p", buf, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", true);
+            CheckGeP("limb 1 above p's is not below p", buf, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000", true);
+            CheckGeP("limb 1 below p's is below p", buf, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffdffffffff", false);
+            CheckGeP("limb 2 below p's is below p", buf, "fffffffffffffffffffffffffffffffffffffffffffffffefffffffeffffffff", false);
+        }
+
+        private void CheckCompareCase(string name, uint[] buf, string a, string b, int expected)
+        {
+            LoadLimbs(a, buf, 0);
+            LoadLimbs(b, buf, 8);
+            int got = U256.Compare(buf, 0, buf, 8);
+            Report(name, got == expected, "expected " + expected + ", got " + got);
+        }
+
+        private void CheckGeP(string name, uint[] buf, string a, bool expected)
+        {
+            LoadLimbs(a, buf, 0);
+            Report("field " + name, U256.FieldGeP(buf, 0) == expected, "wrong answer");
+        }
+
+        // Up to 64 hex chars (left-padded with zeros) -> 8 limbs at dst[offset..].
+        private bool LoadLimbs(string hex, uint[] dst, int offset)
+        {
+            if (hex == null || hex.Length > 64) return false;
+            byte[] bytes = Hex.Decode(hex.PadLeft(64, '0'));
+            if (bytes == null) return false;
+            U256.FromBytes(bytes, 0, dst, offset);
+            return true;
+        }
+
+        private string LimbsHex(uint[] src, int offset)
+        {
+            byte[] bytes = new byte[32];
+            U256.ToBytes(src, offset, bytes, 0);
+            return Hex.Encode(bytes);
         }
 
         private DataList GetList(string name)

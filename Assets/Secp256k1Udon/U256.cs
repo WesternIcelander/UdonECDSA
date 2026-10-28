@@ -1,8 +1,232 @@
 namespace Secp256k1Udon
 {
     // 256-bit numbers as 8 x 32-bit limbs in a uint[] at an offset, least significant limb first.
+    //
+    // Field arithmetic mod p = 2^256 - 2^32 - 977. Inputs must be canonical (below p) unless stated
+    // otherwise, and results are canonical. The result may alias either input. Static classes cannot hold
+    // fields in Udon, so multiply, square and inverse take a caller-owned ulong[ProductScratchLength]
+    // (allocate once and reuse; nothing here allocates).
     public static class U256
     {
+        public const int ProductScratchLength = 32;
+
+        private const ulong Mask32 = 0xFFFFFFFFUL;
+        // 2^256 mod p = 2^32 + 977.
+        private const ulong FoldLow = 977UL;
+
+        // Product scratch layout: 16-limb product at [0..15], operand a at [16..23], operand b at [24..31].
+        private const int ScratchA = 16;
+        private const int ScratchB = 24;
+
+        public static void Copy(uint[] a, int ao, uint[] r, int ro)
+        {
+            for (int i = 0; i < 8; i++) r[ro + i] = a[ao + i];
+        }
+
+        public static bool IsZero(uint[] a, int ao)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                if (a[ao + i] != 0u) return false;
+            }
+            return true;
+        }
+
+        // -1, 0 or 1 as a is below, equal to or above b (plain 256-bit compare).
+        public static int Compare(uint[] a, int ao, uint[] b, int bo)
+        {
+            for (int i = 7; i >= 0; i--)
+            {
+                uint x = a[ao + i];
+                uint y = b[bo + i];
+                if (x != y) return x < y ? -1 : 1;
+            }
+            return 0;
+        }
+
+        // a >= p, for any 256-bit a.
+        public static bool FieldGeP(uint[] a, int ao)
+        {
+            for (int i = 7; i >= 2; i--)
+            {
+                if (a[ao + i] != 0xFFFFFFFFu) return false;
+            }
+            uint a1 = a[ao + 1];
+            if (a1 != 0xFFFFFFFEu) return a1 > 0xFFFFFFFEu;
+            return a[ao] >= 0xFFFFFC2Fu;
+        }
+
+        // Conditional subtract: reduces any 256-bit a (in place) to a mod p. One subtract suffices since 2^256 < 2p.
+        public static void FieldReduce(uint[] a, int ao)
+        {
+            if (FieldGeP(a, ao)) AddFold(a, ao);
+        }
+
+        public static void FieldAdd(uint[] a, int ao, uint[] b, int bo, uint[] r, int ro)
+        {
+            ulong carry = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                ulong v = (ulong)a[ao + i] + b[bo + i] + carry;
+                r[ro + i] = (uint)(v & Mask32);
+                carry = v >> 32;
+            }
+            // The sum is below 2p: subtract p once if it overflowed 2^256 or is at least p.
+            if (carry != 0 || FieldGeP(r, ro)) AddFold(r, ro);
+        }
+
+        public static void FieldSub(uint[] a, int ao, uint[] b, int bo, uint[] r, int ro)
+        {
+            ulong borrow = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                ulong v = (ulong)a[ao + i] - b[bo + i] - borrow;
+                r[ro + i] = (uint)(v & Mask32);
+                borrow = v >> 63;
+            }
+            // Wrapped to a - b + 2^256; adding p instead means subtracting 2^32 + 977.
+            if (borrow != 0) SubFold(r, ro);
+        }
+
+        public static void FieldMul(uint[] a, int ao, uint[] b, int bo, uint[] r, int ro, ulong[] t)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                t[ScratchA + i] = a[ao + i];
+                t[ScratchB + i] = b[bo + i];
+                t[i] = 0;
+            }
+            // Schoolbook product; t[i + 8] is written before row i + 1 reads it.
+            for (int i = 0; i < 8; i++)
+            {
+                ulong ai = t[ScratchA + i];
+                ulong carry = 0;
+                for (int j = 0; j < 8; j++)
+                {
+                    ulong v = t[i + j] + ai * t[ScratchB + j] + carry;
+                    t[i + j] = v & Mask32;
+                    carry = v >> 32;
+                }
+                t[i + 8] = carry;
+            }
+            ReduceProduct(t, r, ro);
+        }
+
+        public static void FieldSqr(uint[] a, int ao, uint[] r, int ro, ulong[] t)
+        {
+            for (int i = 0; i < 8; i++) t[ScratchA + i] = a[ao + i];
+            for (int i = 0; i < 16; i++) t[i] = 0;
+            // Cross products a[i]·a[j] for i < j, once each.
+            for (int i = 0; i < 7; i++)
+            {
+                ulong ai = t[ScratchA + i];
+                ulong carry = 0;
+                for (int j = i + 1; j < 8; j++)
+                {
+                    ulong v = t[i + j] + ai * t[ScratchA + j] + carry;
+                    t[i + j] = v & Mask32;
+                    carry = v >> 32;
+                }
+                t[i + 8] = carry;
+            }
+            // Double the cross products and add the squares a[i]² at limb 2i.
+            ulong c = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                ulong ai = t[ScratchA + i];
+                ulong sq = ai * ai;
+                int k = 2 * i;
+                ulong v = (t[k] << 1) + (sq & Mask32) + c;
+                t[k] = v & Mask32;
+                c = v >> 32;
+                v = (t[k + 1] << 1) + (sq >> 32) + c;
+                t[k + 1] = v & Mask32;
+                c = v >> 32;
+            }
+            ReduceProduct(t, r, ro);
+        }
+
+        // r = a^(p-2) = a⁻¹ mod p (0 for a = 0). Slow (about 256 squares and multiplies); verification does
+        // not use it, it is for tests and debugging in affine coordinates. tmp[to..to+7] holds a copy of a.
+        public static void FieldInv(uint[] a, int ao, uint[] r, int ro, uint[] tmp, int to, ulong[] t)
+        {
+            Copy(a, ao, tmp, to);
+            for (int i = 1; i < 8; i++) r[ro + i] = 0u;
+            r[ro] = 1u;
+            for (int bit = 255; bit >= 0; bit--)
+            {
+                FieldSqr(r, ro, r, ro, t);
+                int limb = bit >> 5;
+                // p - 2 = FFFFFFFF x 6, FFFFFFFE, FFFFFC2D (most significant limb first).
+                uint e = limb >= 2 ? 0xFFFFFFFFu : (limb == 1 ? 0xFFFFFFFEu : 0xFFFFFC2Du);
+                if (((e >> (bit & 31)) & 1u) != 0u) FieldMul(r, ro, tmp, to, r, ro, t);
+            }
+        }
+
+        // Reduces the 16-limb product in t[0..15] mod p into r, using 2^256 ≡ 2^32 + 977.
+        private static void ReduceProduct(ulong[] t, uint[] r, int ro)
+        {
+            // First fold: low + high·(2^32 + 977) into t[0..7] plus a top word below 2^34.
+            ulong v = t[0] + t[8] * FoldLow;
+            t[0] = v & Mask32;
+            ulong carry = v >> 32;
+            for (int i = 1; i < 8; i++)
+            {
+                v = t[i] + t[8 + i] * FoldLow + t[7 + i] + carry;
+                t[i] = v & Mask32;
+                carry = v >> 32;
+            }
+            ulong top = t[15] + carry;
+
+            // Second fold: top·(2^32 + 977).
+            v = t[0] + top * FoldLow;
+            r[ro] = (uint)(v & Mask32);
+            v = t[1] + top + (v >> 32);
+            r[ro + 1] = (uint)(v & Mask32);
+            carry = v >> 32;
+            for (int i = 2; i < 8; i++)
+            {
+                v = t[i] + carry;
+                r[ro + i] = (uint)(v & Mask32);
+                carry = v >> 32;
+            }
+            // Overflowing 2^256 leaves a small value, so folding the carry once more cannot overflow again.
+            if (carry != 0) AddFold(r, ro);
+            if (FieldGeP(r, ro)) AddFold(r, ro);
+        }
+
+        // a += 2^32 + 977 mod 2^256, in place (subtracts p when a + 2^32 + 977 crosses 2^256).
+        private static void AddFold(uint[] a, int ao)
+        {
+            ulong v = (ulong)a[ao] + FoldLow;
+            a[ao] = (uint)(v & Mask32);
+            v = (ulong)a[ao + 1] + 1UL + (v >> 32);
+            a[ao + 1] = (uint)(v & Mask32);
+            ulong carry = v >> 32;
+            for (int i = 2; i < 8 && carry != 0; i++)
+            {
+                v = (ulong)a[ao + i] + carry;
+                a[ao + i] = (uint)(v & Mask32);
+                carry = v >> 32;
+            }
+        }
+
+        // a -= 2^32 + 977 mod 2^256, in place (adds p when a had wrapped past 2^256).
+        private static void SubFold(uint[] a, int ao)
+        {
+            ulong v = (ulong)a[ao] - FoldLow;
+            a[ao] = (uint)(v & Mask32);
+            v = (ulong)a[ao + 1] - 1UL - (v >> 63);
+            a[ao + 1] = (uint)(v & Mask32);
+            ulong borrow = v >> 63;
+            for (int i = 2; i < 8 && borrow != 0; i++)
+            {
+                v = (ulong)a[ao + i] - borrow;
+                a[ao + i] = (uint)(v & Mask32);
+                borrow = v >> 63;
+            }
+        }
+
         // 32 big-endian bytes at src[srcOffset..] -> 8 limbs at dst[dstOffset..].
         public static void FromBytes(byte[] src, int srcOffset, uint[] dst, int dstOffset)
         {
