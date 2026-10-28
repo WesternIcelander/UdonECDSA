@@ -33,6 +33,22 @@ namespace Secp256k1Udon
         // Writes the 32-byte digest of data to output[outputOffset..].
         public static void Hash(byte[] data, uint[] scratch, byte[] output, int outputOffset)
         {
+            Begin(scratch);
+            ProcessBlocks(data, 0, BlockCount(data.Length), scratch);
+            Finish(scratch, output, outputOffset);
+        }
+
+        // The hash can also be run in slices: Begin, ProcessBlocks over blocks 0 .. BlockCount(data.Length) - 1
+        // in order and in as many calls as wanted, then Finish. The data must not change in between.
+
+        // Number of 64-byte blocks hashed for a message of `length` bytes (message, 0x80, zeros, 64-bit length).
+        public static int BlockCount(int length)
+        {
+            return (length + 9 + 63) >> 6;
+        }
+
+        public static void Begin(uint[] scratch)
+        {
             uint[] s = scratch;
             s[H] = 0x6a09e667u;
             s[H + 1] = 0xbb67ae85u;
@@ -42,14 +58,18 @@ namespace Secp256k1Udon
             s[H + 5] = 0x9b05688cu;
             s[H + 6] = 0x1f83d9abu;
             s[H + 7] = 0x5be0cd19u;
+        }
 
+        // Hashes blocks fromBlock .. fromBlock + count - 1 of data (padding included) into the state.
+        public static void ProcessBlocks(byte[] data, int fromBlock, int count, uint[] scratch)
+        {
+            uint[] s = scratch;
             int length = data.Length;
-            // Message + 0x80 + 64-bit bit length, rounded up to whole blocks.
-            int blocks = (length + 9 + 63) >> 6;
+            int blocks = BlockCount(length);
             int fullBlocks = length >> 6;
             ulong bitLength = (ulong)length << 3;
 
-            for (int block = 0; block < blocks; block++)
+            for (int block = fromBlock; block < fromBlock + count; block++)
             {
                 int start = block << 6;
                 if (block < fullBlocks)
@@ -125,7 +145,12 @@ namespace Secp256k1Udon
                 s[H + 6] += g;
                 s[H + 7] += h;
             }
+        }
 
+        // Writes the 32-byte digest to output[outputOffset..] once every block has been processed.
+        public static void Finish(uint[] scratch, byte[] output, int outputOffset)
+        {
+            uint[] s = scratch;
             for (int i = 0; i < 8; i++)
             {
                 uint word = s[H + i];

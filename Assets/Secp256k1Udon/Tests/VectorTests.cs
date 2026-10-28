@@ -23,11 +23,14 @@ namespace Secp256k1Udon.Tests
         private DataDictionary root;
 
         private int step;
+        // EditMode (RunAll): delayed events do not run, so the sliced verifiers are driven with ProcessAllNow.
+        private bool runAllMode;
 
         // Udon halts a behaviour after 10 seconds in one event, so in Play Mode the checks run as steps, one per
         // frame (each signature case is a step of its own).
         private void Start()
         {
+            runAllMode = false;
             BeginRun();
             RunNextStep();
         }
@@ -40,6 +43,7 @@ namespace Secp256k1Udon.Tests
         // EditMode: every step in one call.
         public void RunAll()
         {
+            runAllMode = true;
             BeginRun();
             while (RunStep()) { }
         }
@@ -79,6 +83,20 @@ namespace Secp256k1Udon.Tests
             if (index < flips) { CheckSignatureEntry("signatureFlips", index); return true; }
             index -= flips;
             if (index == 0) { EndEcdsa(); return true; }
+            // Phase 9: the sliced verifier, two rounds of requests; each waiting step repeats until its round is done.
+            if (index == 1) { CheckSlicedPrimitives(); BeginSliced(0); return true; }
+            if (index == 2)
+            {
+                if (SlicedPending()) step--;
+                else { EndSlicedRound(); BeginSliced(1); }
+                return true;
+            }
+            if (index == 3)
+            {
+                if (SlicedPending()) step--;
+                else { EndSlicedRound(); EndSliced(); }
+                return true;
+            }
             return Finish();
         }
 
@@ -932,6 +950,257 @@ namespace Secp256k1Udon.Tests
                 Report("ecdsa invalid-key SignatureVerifier: Verify fails", !invalidKeyVerifier.Verify(data, signature), "accepted");
                 Report("ecdsa invalid-key SignatureVerifier: VerifyHash fails", !invalidKeyVerifier.VerifyHash(hash, signature), "accepted");
             }
+        }
+
+        // Phase 9: the sliced building blocks against their one-call versions.
+        private void CheckSlicedPrimitives()
+        {
+            uint[] sha = Sha256.NewScratch();
+            byte[] digest = new byte[32];
+            DataList list = GetList("sha256");
+            int sliceSizes = 0;
+            bool shaOk = true;
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                byte[] utf8 = Hex.Decode(entry["utf8"].String);
+                if (utf8 == null) continue;
+                int blocks = Sha256.BlockCount(utf8.Length);
+                for (int size = 1; size <= 3; size += 2)
+                {
+                    Sha256.Begin(sha);
+                    for (int b = 0; b < blocks; b += size) Sha256.ProcessBlocks(utf8, b, Mathf.Min(size, blocks - b), sha);
+                    Sha256.Finish(sha, digest, 0);
+                    shaOk &= Hex.Encode(digest) == entry["hash"].String;
+                    sliceSizes++;
+                }
+            }
+            Report("sha256 in slices of 1 and 3 blocks (" + sliceSizes + " runs)", shaOk && sliceSizes > 0, "a digest differed");
+
+            uint[] buf = new uint[32];
+            ulong[] t = new ulong[U256.ProductScratchLength];
+            string[] values =
+            {
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140",
+                "c343df2ce4839762e0be9c9bfd1cf0b0aabebe8efaa364df305781877d83dd26"
+            };
+            for (int i = 0; i < values.Length; i++)
+            {
+                LoadLimbs(values[i], buf, 0);
+                U256.ScalarInv(buf, 0, buf, 8, buf, 16, t);
+                U256.ScalarInvBegin(buf, 0, buf, 24, buf, 16);
+                for (int bit = 255; bit >= 0; bit -= 7) U256.ScalarInvBits(buf, 24, buf, 16, bit, Mathf.Min(7, bit + 1), t);
+                Report("scalar inv in slices of 7 bits: " + values[i], LimbsHex(buf, 8) == LimbsHex(buf, 24),
+                    "one call " + LimbsHex(buf, 8) + ", sliced " + LimbsHex(buf, 24));
+            }
+        }
+
+        // Phase 9: requests through SignatureVerifier.RequestVerify. Round 0 queues every test-key signature case
+        // (more than the queue holds, so some submissions are refused and retried) plus malformed inputs, at the
+        // verifier's own iterationsPerFrame; round 1 queues a few cases at 7 iterations per frame, which divides
+        // neither 256 nor the hash and inverse slices evenly. Results must arrive once each, in request order.
+        private const int SlicedIdBase = 1000;
+        private string[] slicedName;
+        private string[] slicedData;
+        private string[] slicedSignature;
+        private bool[] slicedExpected;
+        private int[] slicedGot;
+        private int slicedCount;
+        private int slicedNext;
+        private int slicedReceived;
+        private int slicedLastId;
+        private bool slicedOrderOk;
+        private bool slicedIdsOk;
+        private int slicedRefused;
+        private bool slicedRefusedWhileFull;
+        private int slicedRound;
+        private int slicedIterations;
+        private int originalIterations;
+        private bool slicedBlockingChecked;
+        private bool invalidKeyPending;
+        private int slicedFullRuns;
+        private int slicedMinFrames;
+        private int slicedMaxFrames;
+        private double slicedMaxComputeMs;
+        private double slicedMaxMeanSliceMs;
+        private double slicedMaxSliceMs;
+
+        private void BeginSliced(int round)
+        {
+            slicedRound = round;
+            if (verifier == null)
+            {
+                Report("sliced: SignatureVerifier assigned", false, "no verifier assigned");
+                slicedCount = 0;
+                return;
+            }
+            if (round == 0) originalIterations = verifier.iterationsPerFrame;
+            else verifier.iterationsPerFrame = 7;
+            slicedIterations = verifier.iterationsPerFrame;
+
+            int capacity = GetList("signatures").Count + GetList("signatureFlips").Count + 3;
+            slicedName = new string[capacity];
+            slicedData = new string[capacity];
+            slicedSignature = new string[capacity];
+            slicedExpected = new bool[capacity];
+            slicedGot = new int[capacity];
+            slicedCount = 0;
+            AddSlicedEntries("signatures", round == 0 ? 1000 : 6);
+            if (round == 0)
+            {
+                AddSlicedEntries("signatureFlips", 1000);
+                string signature = slicedSignature[0];
+                AddSlicedCase("null data", null, signature, false);
+                AddSlicedCase("null signature", "x", null, false);
+                AddSlicedCase("malformed signature", "x", "zz", false);
+            }
+            slicedNext = 0;
+            slicedReceived = 0;
+            slicedLastId = SlicedIdBase - 1;
+            slicedOrderOk = true;
+            slicedIdsOk = true;
+            slicedRefused = 0;
+            slicedRefusedWhileFull = true;
+            slicedBlockingChecked = round != 0;
+            slicedFullRuns = 0;
+            slicedMinFrames = int.MaxValue;
+            slicedMaxFrames = 0;
+            slicedMaxComputeMs = 0;
+            slicedMaxMeanSliceMs = 0;
+            slicedMaxSliceMs = 0;
+
+            if (round == 0)
+            {
+                Report("sliced: null caller refused", !verifier.RequestVerify("x", slicedSignature[0], null, nameof(_OnSlicedResult), 1), "accepted");
+                Report("sliced: empty callback event refused", !verifier.RequestVerify("x", slicedSignature[0], this, "", 1), "accepted");
+                Report("sliced: null callback event refused", !verifier.RequestVerify("x", slicedSignature[0], this, null, 1), "accepted");
+                invalidKeyPending = invalidKeyVerifier != null
+                    && invalidKeyVerifier.RequestVerify(slicedData[0], slicedSignature[0], this, nameof(_OnInvalidKeyResult), 77);
+                Report("sliced: invalid-key verifier accepts the request", invalidKeyPending, "refused");
+            }
+            SubmitSliced();
+        }
+
+        private void AddSlicedEntries(string listName, int most)
+        {
+            DataList list = GetList(listName);
+            string testKey = root["testPublicKey"].String;
+            int added = 0;
+            for (int i = 0; i < list.Count && added < most; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                if (entry["publicKey"].String.ToLower() != testKey) continue;
+                string data = GetData(entry);
+                if (data == null) continue;
+                AddSlicedCase(listName + ": " + entry["name"].String, data, entry["signature"].String, entry["valid"].Boolean);
+                added++;
+            }
+        }
+
+        private void AddSlicedCase(string name, string data, string signature, bool expected)
+        {
+            slicedName[slicedCount] = name;
+            slicedData[slicedCount] = data;
+            slicedSignature[slicedCount] = signature;
+            slicedExpected[slicedCount] = expected;
+            slicedGot[slicedCount] = 0;
+            slicedCount++;
+        }
+
+        // Queues as many of the round's cases as the verifier takes.
+        private void SubmitSliced()
+        {
+            while (slicedNext < slicedCount)
+            {
+                if (!verifier.RequestVerify(slicedData[slicedNext], slicedSignature[slicedNext], this, nameof(_OnSlicedResult), SlicedIdBase + slicedNext))
+                {
+                    slicedRefused++;
+                    if (verifier.PendingCount() < verifier.queueCapacity) slicedRefusedWhileFull = false;
+                    return;
+                }
+                slicedNext++;
+            }
+        }
+
+        // True while the round still waits for results.
+        private bool SlicedPending()
+        {
+            if (verifier == null) return false;
+            SubmitSliced();
+            if (!slicedBlockingChecked && verifier.PendingCount() > 0)
+            {
+                // The blocking path has its own buffers: using it mid-request must not disturb the sliced one.
+                slicedBlockingChecked = true;
+                Report("sliced: blocking Verify while requests are pending", verifier.Verify(slicedData[0], slicedSignature[0]) == slicedExpected[0],
+                    "wrong result");
+            }
+            if (runAllMode)
+            {
+                verifier.ProcessAllNow();
+                if (invalidKeyVerifier != null) invalidKeyVerifier.ProcessAllNow();
+            }
+            return slicedReceived < slicedCount || slicedNext < slicedCount || (slicedRound == 0 && invalidKeyPending);
+        }
+
+        public void _OnSlicedResult()
+        {
+            int id = verifier.resultRequestId;
+            bool valid = verifier.resultValid;
+            int i = id - SlicedIdBase;
+            if (i < 0 || i >= slicedCount || slicedGot[i] != 0)
+            {
+                slicedIdsOk = false;
+                return;
+            }
+            if (id <= slicedLastId) slicedOrderOk = false;
+            slicedLastId = id;
+            slicedGot[i] = valid ? 1 : 2;
+            slicedReceived++;
+            Report("ecdsa sliced (" + slicedIterations + " per frame) " + slicedName[i], valid == slicedExpected[i],
+                "expected " + (slicedExpected[i] ? "valid" : "invalid"));
+
+            if (verifier.lastMaxFrameMs > slicedMaxSliceMs) slicedMaxSliceMs = verifier.lastMaxFrameMs;
+            if (valid)
+            {
+                // A valid result ran every stage, so its frames and time are those of a full verification.
+                slicedFullRuns++;
+                if (verifier.lastFrames < slicedMinFrames) slicedMinFrames = verifier.lastFrames;
+                if (verifier.lastFrames > slicedMaxFrames) slicedMaxFrames = verifier.lastFrames;
+                if (verifier.lastComputeMs > slicedMaxComputeMs) slicedMaxComputeMs = verifier.lastComputeMs;
+                double mean = verifier.lastComputeMs / verifier.lastFrames;
+                if (mean > slicedMaxMeanSliceMs) slicedMaxMeanSliceMs = mean;
+            }
+        }
+
+        public void _OnInvalidKeyResult()
+        {
+            invalidKeyPending = false;
+            Report("sliced: invalid-key verifier reports invalid", invalidKeyVerifier.resultRequestId == 77 && !invalidKeyVerifier.resultValid,
+                "got id " + invalidKeyVerifier.resultRequestId + ", valid " + invalidKeyVerifier.resultValid);
+        }
+
+        private void EndSlicedRound()
+        {
+            if (verifier == null) return;
+            string round = "sliced round " + slicedRound + " (" + slicedIterations + " per frame, " + slicedCount + " requests)";
+            Report(round + ": every result arrived once", slicedIdsOk && slicedReceived == slicedCount, "got " + slicedReceived + (slicedIdsOk ? "" : ", unknown or repeated IDs"));
+            Report(round + ": results in request order", slicedOrderOk, "out of order");
+            Report(round + ": verifier idle afterwards", verifier.PendingCount() == 0, verifier.PendingCount() + " pending");
+            if (slicedRound == 0)
+            {
+                Report(round + ": a full queue refused requests", slicedRefused > 0 && slicedRefusedWhileFull,
+                    slicedRefused == 0 ? "never full" : "refused while not full");
+            }
+            Debug.Log("[VectorTests] timing " + round + ": full verification " + slicedMinFrames + " to " + slicedMaxFrames + " frames, at most "
+                + slicedMaxComputeMs.ToString("F1") + " ms of computation, mean slice at most " + slicedMaxMeanSliceMs.ToString("F2")
+                + " ms, longest slice " + slicedMaxSliceMs.ToString("F2") + " ms (" + slicedFullRuns + " full runs)");
+        }
+
+        private void EndSliced()
+        {
+            if (verifier != null) verifier.iterationsPerFrame = originalIterations;
         }
 
         private string FindPoint(string name)

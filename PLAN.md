@@ -173,12 +173,12 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 ### Phase 9: Frame-sliced verifier
 
-- [ ] Convert Phase 8 into a state machine: parse/hash, scalar setup, N loop iterations per frame, final comparison.
-- [ ] Drive it with `SendCustomEventDelayedFrames` (or `Update` while busy). Use one shared verifier with a queue, so multiple requests are processed one at a time.
-- [ ] Request API: caller passes `data`, `signatureHex`, a caller `UdonSharpBehaviour`, a callback event name, and a request ID. On completion the verifier sets the result (request ID, valid/invalid) in fields the caller can read, then calls the event on the caller. Document the exact field names.
-- [ ] Define queue behaviour when full (fixed capacity, reject new requests and report invalid, or grow) and document it.
-- [ ] Measure total verification time and per-frame cost in Udon. Pick N so the per-frame cost stays below about 2 ms on a typical desktop client, and expose N as an inspector field. Record the measurements below.
-- [ ] Valid and invalid vectors still pass through the sliced path, including several queued requests at once.
+- [x] Convert Phase 8 into a state machine: parse/hash, scalar setup, N loop iterations per frame, final comparison. The scalar inverse alone takes about 40 ms in Udon, so it is sliced too, and so is SHA-256 for long data. Stages, one slice per frame: start (dequeue, `VerifyParse`, which rejects a malformed signature at once, `Utf8.Encode`, `Sha256.Begin`), hash (4N blocks per frame, then `Sha256.Finish` and `Secp256k1.VerifySetupBegin`), inverse (`VerifyInverseBits`, 6N bits per frame), `VerifySetupEnd`, the double-and-add loop (`DoubleMulBits`, N bits per frame), `VerifyFinish`. New sliceable pieces: `Sha256.Begin`/`ProcessBlocks`/`Finish`/`BlockCount` (`Hash` is built from them), `U256.ScalarInvBegin`/`ScalarInvBits`, and `VerifySetup` split into `VerifySetupBegin`, `VerifyInverseBits`, `VerifySetupEnd`. The UTF-8 encoding is not sliced (about 0.6 µs per character).
+- [x] Drive it with `SendCustomEventDelayedFrames` (or `Update` while busy). Use one shared verifier with a queue, so multiple requests are processed one at a time. `SignatureVerifier._Tick` runs one slice and reschedules itself while requests are pending; nothing runs while idle. The sliced path has its own buffers, so a blocking `Verify` during a sliced request is safe. `ProcessAllNow()` runs every pending request to completion in one call (EditMode tests, tooling). The verifier's GameObject must stay active while requests are pending.
+- [x] Request API: caller passes `data`, `signatureHex`, a caller `UdonSharpBehaviour`, a callback event name, and a request ID. On completion the verifier sets the result (request ID, valid/invalid) in fields the caller can read, then calls the event on the caller. Document the exact field names. `bool RequestVerify(string data, string signatureHex, UdonSharpBehaviour caller, string callbackEvent, int requestId)`. On completion the verifier sets its own public fields `resultRequestId` (int) and `resultValid` (bool), then sends `callbackEvent` (a public method on the caller), which reads them through its verifier reference during that event; the next result overwrites them. Results arrive in request order. Malformed input (null data, bad signature, invalid key) is accepted and reported invalid through the callback. A caller destroyed in the meantime is skipped. Also `PendingCount()` and per-request measurements `lastFrames`, `lastComputeMs`, `lastMaxFrameMs`.
+- [x] Define queue behaviour when full (fixed capacity, reject new requests and report invalid, or grow) and document it. Fixed capacity, inspector field `queueCapacity` (default 16 waiting requests, besides the one running). When the queue is full, `RequestVerify` returns false and never calls back; the caller may retry later. It also returns false for a null caller or a null or empty event name.
+- [x] Measure total verification time and per-frame cost in Udon. Pick N so the per-frame cost stays below about 2 ms on a typical desktop client, and expose N as an inspector field. Record the measurements below. Inspector field `iterationsPerFrame`, default 1 (see Measurements). `Tests/TimingProbe` logs the building blocks' costs.
+- [x] Valid and invalid vectors still pass through the sliced path, including several queued requests at once. `VectorTests` round 0 queues all 56 test-key signature cases plus malformed inputs at the verifier's N (more than the queue holds, so full-queue refusals and retries are exercised), round 1 six cases at N = 7 (uneven slices), plus null caller or event, the invalid-key verifier and a blocking `Verify` mid-request; results arrive once each, in order. The sliced SHA-256 and inverse are checked against their one-call versions. Tests pass in EditMode and in Udon (500 passed, 0 failed); the Play Mode run now takes about 3 minutes.
 
 ### Phase 10: Nonce generator
 
@@ -205,7 +205,9 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 ## Measurements
 
-- Full verification time in Udon (blocking):
-- Iterations per frame chosen:
-- Per-frame cost at that setting:
-- Frames per verification:
+All in Unity 2022.3.22f1 Play Mode (Udon VM in the editor, desktop PC); a VRChat client is expected to be similar.
+
+- Full verification time in Udon (blocking): about 290 ms (`TimingProbe`, `Secp256k1.VerifyHash`). Building blocks: field multiply 0.05 ms, square 0.04 ms, scalar multiply 0.10 ms, scalar inverse 40 ms, point double 0.41 ms, mixed add 0.61 ms, Jacobian add 0.88 ms, one double-and-add step about 0.9 ms on average (up to 1.3 ms), SHA-256 about 0.23 ms per 64-byte block, UTF-8 encoding about 0.6 µs per character.
+- Iterations per frame chosen: N = 1 (`iterationsPerFrame`). At N = 2 a typical slice was about 2.0 ms and the worst about 2.6 ms (two doubles and two Jacobian adds), above the 2 ms target, for half the frames (155).
+- Per-frame cost at that setting: mean 1.0 ms per slice, normally at most about 1.3 ms; the longest single slice seen in about 9,400 was 2.24 ms (likely an editor or GC hiccup). Total computation per sliced verification about 300–310 ms. The first slice also encodes the data as UTF-8, which grows with its length (about 0.6 ms per 1,000 characters).
+- Frames per verification: 303–306 at N = 1 (about 5 s at 60 fps, 2.5 s at 120 fps), 154–155 at N = 2, 48 at N = 7. Queued requests run one after another.

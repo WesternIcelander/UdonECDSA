@@ -307,10 +307,23 @@ namespace Secp256k1Udon
         // runs once per verification (w = s⁻¹). tmp[to..to+7] holds a copy of a.
         public static void ScalarInv(uint[] a, int ao, uint[] r, int ro, uint[] tmp, int to, ulong[] t)
         {
+            ScalarInvBegin(a, ao, r, ro, tmp, to);
+            ScalarInvBits(r, ro, tmp, to, 255, 256, t);
+        }
+
+        // ScalarInv in slices: ScalarInvBegin, then ScalarInvBits over bits 255 down to 0 in as many calls as
+        // wanted (a full run is fromBit 255 and count 256). r and tmp hold the state in between.
+        public static void ScalarInvBegin(uint[] a, int ao, uint[] r, int ro, uint[] tmp, int to)
+        {
             Copy(a, ao, tmp, to);
             for (int i = 1; i < 8; i++) r[ro + i] = 0u;
             r[ro] = 1u;
-            for (int bit = 255; bit >= 0; bit--)
+        }
+
+        // Processes count bits of the exponent n - 2, from bit `fromBit` downwards.
+        public static void ScalarInvBits(uint[] r, int ro, uint[] tmp, int to, int fromBit, int count, ulong[] t)
+        {
+            for (int bit = fromBit; bit > fromBit - count; bit--)
             {
                 ScalarSqr(r, ro, r, ro, t);
                 int limb = bit >> 5;

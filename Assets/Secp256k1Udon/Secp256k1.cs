@@ -253,7 +253,8 @@ namespace Secp256k1Udon
         // either case: r || s || v, with v ignored (but still required to be hex). High s is accepted. Returns
         // false for any malformed or invalid input and never throws. Allocates nothing.
         //
-        // The steps are public so the frame-sliced verifier can spread them over frames: VerifyParse, VerifySetup,
+        // The steps are public so the frame-sliced verifier can spread them over frames: VerifyParse, VerifySetup
+        // (itself VerifySetupBegin, VerifyInverseBits over 255, 256 in slices, VerifySetupEnd),
         // DoubleMulBits(s, U1Offset, s, U2Offset, 255, 256 in slices) and VerifyFinish.
         public static bool VerifyHash(byte[] hash, int ho, string signatureHex, uint[] q, int qo, uint[] s, ulong[] t)
         {
@@ -281,9 +282,27 @@ namespace Secp256k1Udon
         // hash[ho..ho+31] must exist.
         public static void VerifySetup(byte[] hash, int ho, uint[] q, int qo, uint[] s, ulong[] t)
         {
+            VerifySetupBegin(hash, ho, s);
+            VerifyInverseBits(255, 256, s, t);
+            VerifySetupEnd(q, qo, s, t);
+        }
+
+        // VerifySetup in slices: VerifySetupBegin (z, start of w = s⁻¹), VerifyInverseBits over bits 255 down to 0,
+        // then VerifySetupEnd (u1, u2, DoubleMulInit).
+        public static void VerifySetupBegin(byte[] hash, int ho, uint[] s)
+        {
             U256.FromBytes(hash, ho, s, U1Offset);
             U256.ScalarReduce(s, U1Offset);                                 // z
-            U256.ScalarInv(s, SOffset, s, U2Offset, s, VerifyTemp, t);      // w
+            U256.ScalarInvBegin(s, SOffset, s, U2Offset, s, VerifyTemp);
+        }
+
+        public static void VerifyInverseBits(int fromBit, int count, uint[] s, ulong[] t)
+        {
+            U256.ScalarInvBits(s, U2Offset, s, VerifyTemp, fromBit, count, t);   // w
+        }
+
+        public static void VerifySetupEnd(uint[] q, int qo, uint[] s, ulong[] t)
+        {
             U256.ScalarMul(s, U1Offset, s, U2Offset, s, U1Offset, t);       // u1 = z·w
             U256.ScalarMul(s, ROffset, s, U2Offset, s, U2Offset, t);        // u2 = r·w
             DoubleMulInit(q, qo, s, t);
