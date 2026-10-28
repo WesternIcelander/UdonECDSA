@@ -127,8 +127,8 @@ Observations from this example:
 
 ### Phase 4: SHA-256
 
-- [ ] Implement SHA-256 over `byte[]` with preallocated message schedule buffers.
-- [ ] All SHA-256 vectors pass in EditMode and in Udon.
+- [x] Implement SHA-256 over `byte[]` with preallocated message schedule buffers. Static classes cannot hold fields in Udon, so the caller owns a scratch buffer: `Sha256.NewScratch()` once (round constants, schedule and state), then `Sha256.Hash(data, scratch, output, outputOffset)`, which allocates nothing.
+- [x] All SHA-256 vectors pass in EditMode and in Udon, both from the stored UTF-8 bytes and from the `data` string through `Utf8.Encode` (130 passed, 0 failed in both).
 
 ### Phase 5: Field arithmetic mod p
 

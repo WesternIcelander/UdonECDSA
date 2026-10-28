@@ -35,6 +35,7 @@ namespace Secp256k1Udon.Tests
                 CheckHex();
                 CheckUtf8();
                 CheckLimbs();
+                CheckSha256();
             }
 
             done = true;
@@ -254,6 +255,57 @@ namespace Secp256k1Udon.Tests
                 count++;
             }
             Report("limbs round trip of field operands (" + count + " values)", allOk && count > 0, "a round trip differed");
+        }
+
+        // Phase 4: SHA-256 of every sha256 vector, from its stored utf8 bytes and from its data string
+        // through Utf8.Encode. One scratch buffer is reused for all calls.
+        private void CheckSha256()
+        {
+            uint[] scratch = Sha256.NewScratch();
+            Report("sha256 scratch length", scratch.Length == Sha256.ScratchLength, "got " + scratch.Length);
+
+            byte[] digest = new byte[32];
+            DataList list = GetList("sha256");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                string name = entry["name"].String;
+                string expected = entry["hash"].String;
+
+                byte[] utf8 = Hex.Decode(entry["utf8"].String);
+                if (utf8 == null)
+                {
+                    Report("sha256 bytes: " + name, false, "malformed utf8 field");
+                }
+                else
+                {
+                    Sha256.Hash(utf8, scratch, digest, 0);
+                    string got = Hex.Encode(digest);
+                    Report("sha256 bytes: " + name + " (" + utf8.Length + " bytes)", got == expected, "expected " + expected + ", got " + got);
+                }
+
+                string data = GetData(entry);
+                if (data == null)
+                {
+                    Report("sha256 string: " + name, false, "missing or malformed utf16 field");
+                    continue;
+                }
+                Sha256.Hash(Utf8.Encode(data), scratch, digest, 0);
+                string gotString = Hex.Encode(digest);
+                Report("sha256 string: " + name, gotString == expected, "expected " + expected + ", got " + gotString);
+            }
+
+            // Output at an offset leaves the surrounding bytes alone.
+            byte[] wide = new byte[40];
+            for (int i = 0; i < wide.Length; i++) wide[i] = 0xAA;
+            Sha256.Hash(Hex.Decode("616263"), scratch, wide, 5);
+            bool offsetOk = true;
+            for (int i = 0; i < 5; i++) offsetOk &= wide[i] == 0xAA;
+            for (int i = 37; i < 40; i++) offsetOk &= wide[i] == 0xAA;
+            byte[] middle = new byte[32];
+            System.Array.Copy(wide, 5, middle, 0, 32);
+            offsetOk &= Hex.Encode(middle) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+            Report("sha256 output at an offset", offsetOk, "digest or surrounding bytes wrong");
         }
 
         private DataList GetList(string name)
