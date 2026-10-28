@@ -38,6 +38,7 @@ namespace Secp256k1Udon.Tests
                 CheckSha256();
                 CheckField();
                 CheckScalar();
+                CheckCurve();
             }
 
             done = true;
@@ -520,6 +521,234 @@ namespace Secp256k1Udon.Tests
         {
             LoadLimbs(a, buf, 0);
             Report("field " + name, U256.FieldGeP(buf, 0) == expected, "wrong answer");
+        }
+
+        // Phase 7: point doubling and addition, double multiplication and public key validation.
+        private void CheckCurve()
+        {
+            uint[] s = Secp256k1.NewScratch();
+            ulong[] t = new ulong[U256.ProductScratchLength];
+            Report("curve scratch length", s.Length == Secp256k1.ScratchLength, "got " + s.Length);
+            CheckPointOps(s, t);
+            CheckPointVectors(s, t);
+            CheckDoubleMulVectors(s, t);
+            CheckPublicKeys(s, t);
+        }
+
+        // Double and add on small multiples of G, in and out of place, with the special cases.
+        private void CheckPointOps(uint[] s, ulong[] t)
+        {
+            string g = FindPoint("G");
+            string g2 = FindPoint("2G");
+            string g3 = FindPoint("3G");
+            string g7 = FindPoint("7G");
+            string gNeg = FindPoint("(n-1)G = -G");
+
+            // Points at 0, 24, 48, ...; affine G at 200.
+            uint[] p = new uint[240];
+            int pG = 0, p2 = 24, p3 = 48, p4 = 72, pR = 96, pInf = 120, pNeg = 144;
+            int aG = 200;
+            Secp256k1.FromAffine(s, Secp256k1.GOffset, p, pG);
+            U256.Copy(s, Secp256k1.GOffset, p, aG);
+            U256.Copy(s, Secp256k1.GOffset + 8, p, aG + 8);
+            Secp256k1.SetInfinity(p, pInf);
+
+            Report("curve G from scratch", PointHex(p, pG, s, t) == g, "got " + PointHex(p, pG, s, t));
+
+            Secp256k1.Double(p, pG, p, p2, s, t);
+            CheckPoint("curve double G = 2G", p, p2, g2, s, t);
+            Secp256k1.Double(p, p2, p, p4, s, t);
+            Secp256k1.CopyPoint(p, p2, p, pR);
+            Secp256k1.Double(p, pR, p, pR, s, t);
+            Report("curve double in place", PointHex(p, pR, s, t) == PointHex(p, p4, s, t), "differs from separate result");
+
+            Secp256k1.AddAffine(p, p2, p, aG, p, p3, s, t);
+            CheckPoint("curve 2G + G (mixed) = 3G", p, p3, g3, s, t);
+            Secp256k1.Add(p, p2, p, pG, p, pR, s, t);
+            CheckPoint("curve 2G + G (Jacobian) = 3G", p, pR, g3, s, t);
+            Secp256k1.Add(p, pG, p, p2, p, pR, s, t);
+            CheckPoint("curve G + 2G (Jacobian) = 3G", p, pR, g3, s, t);
+
+            // 4G + 3G, both with Z != 1, separate and over either input.
+            Secp256k1.Add(p, p4, p, p3, p, pR, s, t);
+            CheckPoint("curve 4G + 3G = 7G", p, pR, g7, s, t);
+            Secp256k1.CopyPoint(p, p4, p, pR);
+            Secp256k1.Add(p, pR, p, p3, p, pR, s, t);
+            CheckPoint("curve 4G + 3G over P = 7G", p, pR, g7, s, t);
+            Secp256k1.CopyPoint(p, p3, p, pR);
+            Secp256k1.Add(p, p4, p, pR, p, pR, s, t);
+            CheckPoint("curve 4G + 3G over Q = 7G", p, pR, g7, s, t);
+
+            // P == Q falls back to doubling, also when the two have different Z.
+            Secp256k1.Add(p, p2, p, p2, p, pR, s, t);
+            CheckPoint("curve 2G + 2G (same Z) = 4G", p, pR, PointHex(p, p4, s, t), s, t);
+            // 3G again through the Jacobian path (G + 2G), which leaves Z negated relative to p3.
+            Secp256k1.Add(p, pG, p, p2, p, pNeg, s, t);
+            Secp256k1.Add(p, p3, p, pNeg, p, pR, s, t);
+            CheckPoint("curve 3G + 3G (different Z) = 6G", p, pR, Double6(p, p3, s, t), s, t);
+            Secp256k1.AddAffine(p, pG, p, aG, p, pR, s, t);
+            CheckPoint("curve G + G (mixed) = 2G", p, pR, g2, s, t);
+
+            // P == -Q gives infinity: negate Y of 3G (Z != 1) and of affine G.
+            Secp256k1.CopyPoint(p, p3, p, pNeg);
+            NegateY(p, pNeg + 8);
+            Secp256k1.Add(p, p3, p, pNeg, p, pR, s, t);
+            CheckPoint("curve 3G + (-3G) = infinity", p, pR, "infinity", s, t);
+            U256.Copy(p, aG, p, 216);
+            U256.Copy(p, aG + 8, p, 224);
+            NegateY(p, 224);
+            Secp256k1.FromAffine(p, 216, p, pNeg);
+            CheckPoint("curve -G", p, pNeg, gNeg, s, t);
+            Secp256k1.AddAffine(p, pG, p, 216, p, pR, s, t);
+            CheckPoint("curve G + (-G) (mixed) = infinity", p, pR, "infinity", s, t);
+
+            // Infinity on either side.
+            Secp256k1.Add(p, pInf, p, p3, p, pR, s, t);
+            CheckPoint("curve infinity + 3G = 3G", p, pR, g3, s, t);
+            Secp256k1.Add(p, p3, p, pInf, p, pR, s, t);
+            CheckPoint("curve 3G + infinity = 3G", p, pR, g3, s, t);
+            Secp256k1.Add(p, pInf, p, pInf, p, pR, s, t);
+            CheckPoint("curve infinity + infinity = infinity", p, pR, "infinity", s, t);
+            Secp256k1.AddAffine(p, pInf, p, aG, p, pR, s, t);
+            CheckPoint("curve infinity + G (mixed) = G", p, pR, g, s, t);
+            Secp256k1.Double(p, pInf, p, pR, s, t);
+            CheckPoint("curve double infinity = infinity", p, pR, "infinity", s, t);
+        }
+
+        private string Double6(uint[] p, int p3, uint[] s, ulong[] t)
+        {
+            uint[] tmp = new uint[Secp256k1.PointLength];
+            Secp256k1.Double(p, p3, tmp, 0, s, t);
+            return PointHex(tmp, 0, s, t);
+        }
+
+        // y -> p - y (y nonzero).
+        private void NegateY(uint[] buf, int yo)
+        {
+            uint[] zero = new uint[8];
+            U256.FieldSub(zero, 0, buf, yo, buf, yo);
+        }
+
+        // kG for every point vector, through u1 (G path) and through u2 with Q = G (Q path).
+        private void CheckPointVectors(uint[] s, ulong[] t)
+        {
+            uint[] buf = new uint[72];
+            int k = 0, zero = 8, q = 16, r = 32;
+            U256.Copy(s, Secp256k1.GOffset, buf, q);
+            U256.Copy(s, Secp256k1.GOffset + 8, buf, q + 8);
+            DataList list = GetList("points");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                string name = entry["name"].String;
+                string expected = ExpectedPoint(entry);
+                if (!LoadLimbs(entry["k"].String, buf, k))
+                {
+                    Report("point " + name, false, "malformed k");
+                    continue;
+                }
+                Secp256k1.DoubleMul(buf, k, buf, zero, buf, q, buf, r, s, t);
+                CheckPoint("point " + name + " = kG (via u1)", buf, r, expected, s, t);
+                Secp256k1.DoubleMul(buf, zero, buf, k, buf, q, buf, r, s, t);
+                CheckPoint("point " + name + " = kQ, Q = G (via u2)", buf, r, expected, s, t);
+            }
+        }
+
+        // u1·G + u2·Q for every doubleMul vector, in one run and in uneven slices.
+        private void CheckDoubleMulVectors(uint[] s, ulong[] t)
+        {
+            uint[] buf = new uint[72];
+            int u1 = 0, u2 = 8, q = 16, r = 32;
+            DataList list = GetList("doubleMul");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                string name = "doubleMul " + entry["name"].String + " " + i;
+                string expected = ExpectedPoint(entry);
+                if (!LoadLimbs(entry["u1"].String, buf, u1) || !LoadLimbs(entry["u2"].String, buf, u2)
+                    || !LoadLimbs(entry["qx"].String, buf, q) || !LoadLimbs(entry["qy"].String, buf, q + 8))
+                {
+                    Report(name, false, "malformed operand");
+                    continue;
+                }
+                Secp256k1.DoubleMul(buf, u1, buf, u2, buf, q, buf, r, s, t);
+                CheckPoint(name, buf, r, expected, s, t);
+
+                Secp256k1.DoubleMulInit(buf, q, s, t);
+                int bit = 255;
+                int[] slices = { 1, 30, 7, 100, 64, 54 };
+                for (int j = 0; j < slices.Length; j++)
+                {
+                    Secp256k1.DoubleMulBits(buf, u1, buf, u2, bit, slices[j], s, t);
+                    bit -= slices[j];
+                }
+                CheckPoint(name + " (sliced)", s, Secp256k1.AccumulatorOffset, bit == -1 ? expected : "slices do not cover 256 bits", s, t);
+            }
+        }
+
+        // Every public key case, and that a valid key loads to its own coordinates.
+        private void CheckPublicKeys(uint[] s, ulong[] t)
+        {
+            uint[] key = new uint[20];
+            DataList list = GetList("publicKeys");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                string name = entry["name"].String;
+                string hex = entry["publicKey"].String;
+                bool expected = entry["valid"].Boolean;
+                for (int j = 0; j < key.Length; j++) key[j] = 0xA5A5A5A5u;
+                bool got = Secp256k1.LoadPublicKey(hex, key, 2, s, t);
+                if (got != expected)
+                {
+                    Report("public key " + name, false, "expected " + (expected ? "valid" : "invalid"));
+                    continue;
+                }
+                bool untouched = key[0] == 0xA5A5A5A5u && key[1] == 0xA5A5A5A5u && key[18] == 0xA5A5A5A5u && key[19] == 0xA5A5A5A5u;
+                if (got)
+                {
+                    string coords = LimbsHex(key, 2) + LimbsHex(key, 10);
+                    Report("public key " + name, untouched && "04" + coords == hex.ToLower(), "loaded coordinates differ");
+                }
+                else
+                {
+                    bool keptAll = untouched;
+                    for (int j = 2; j < 18; j++) keptAll &= key[j] == 0xA5A5A5A5u;
+                    Report("public key " + name + " rejected", keptAll, "wrote to the result");
+                }
+            }
+            Report("public key null rejected", !Secp256k1.LoadPublicKey(null, key, 2, s, t), "accepted");
+        }
+
+        private string FindPoint(string name)
+        {
+            DataList list = GetList("points");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                if (entry["name"].String == name) return ExpectedPoint(entry);
+            }
+            return "missing point vector " + name;
+        }
+
+        private string ExpectedPoint(DataDictionary entry)
+        {
+            if (entry["infinity"].Boolean) return "infinity";
+            return entry["x"].String.ToLower() + "," + entry["y"].String.ToLower();
+        }
+
+        // "x,y" in lowercase hex (affine), or "infinity".
+        private string PointHex(uint[] p, int po, uint[] s, ulong[] t)
+        {
+            uint[] a = new uint[Secp256k1.AffineLength];
+            if (!Secp256k1.ToAffine(p, po, a, 0, s, t)) return "infinity";
+            return LimbsHex(a, 0) + "," + LimbsHex(a, 8);
+        }
+
+        private void CheckPoint(string name, uint[] p, int po, string expected, uint[] s, ulong[] t)
+        {
+            string got = PointHex(p, po, s, t);
+            Report(name, got == expected, "expected " + expected + ", got " + got);
         }
 
         // Up to 64 hex chars (left-padded with zeros) -> 8 limbs at dst[offset..].

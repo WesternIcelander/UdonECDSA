@@ -151,11 +151,11 @@ n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141.
 
 ### Phase 7: Curve operations
 
-- [ ] Jacobian point doubling for a = 0.
-- [ ] Jacobian point addition (Jacobian + Jacobian, or mixed with affine where cheaper), with correct handling of: either input at infinity, P == Q (fall back to doubling), P == -Q (result at infinity).
-- [ ] Shamir double-scalar multiplication `u1·G + u2·Q`: precompute `G + Q`, then one shared double-and-add loop over 256 bits.
-- [ ] Public key validation: prefix `04`, correct length, coordinates below p, point on the curve (`y² = x³ + 7 mod p`). Run once when the key is loaded; an invalid key makes every verification fail and logs an error.
-- [ ] Tests (2G, 3G, kG, u1·G + u2·Q, public key cases) pass in EditMode and in Udon.
+- [x] Jacobian point doubling for a = 0. `Secp256k1.Double` (dbl-2009-l, 2M + 5S). Points are 24 limbs (X, Y, Z) at an offset, Z = 0 is infinity; affine points are 16 limbs (x, y). Like `Sha256`, the caller owns a scratch buffer (`Secp256k1.NewScratch()`, which also holds G) plus the `ulong[U256.ProductScratchLength]` product scratch; results may alias inputs.
+- [x] Jacobian point addition (Jacobian + Jacobian, or mixed with affine where cheaper), with correct handling of: either input at infinity, P == Q (fall back to doubling), P == -Q (result at infinity). `Add` (Jacobian + Jacobian, 12M + 4S) and `AddAffine` (mixed, 8M + 3S), sharing one add-2007-bl core.
+- [x] Shamir double-scalar multiplication `u1·G + u2·Q`: precompute `G + Q`, then one shared double-and-add loop over 256 bits. `DoubleMul`, built from `DoubleMulInit` (stores Q, precomputes G + Q in Jacobian form, no inverse) and `DoubleMulBits(fromBit, count)`, so Phase 9 can run the loop in slices; the accumulator stays at `AccumulatorOffset` in the scratch. G and Q are added with mixed addition, G + Q with the Jacobian one. `ToAffine` (one field inverse) exists for tests and debugging only.
+- [x] Public key validation: prefix `04`, correct length, coordinates below p, point on the curve (`y² = x³ + 7 mod p`). Run once when the key is loaded; an invalid key makes every verification fail and logs an error. `Secp256k1.LoadPublicKey(hex, ...)` returns false without writing the result for any malformed or invalid key, and never throws. It does not log (the tests feed it invalid keys on purpose); logging the error and failing every verification belongs to the verifier that holds the key (Phase 8/9).
+- [x] Tests (2G, 3G, kG, u1·G + u2·Q, public key cases) pass in EditMode and in Udon (232 passed, 0 failed in both). Besides the vectors (each kG through both the u1 and the u2 path, each doubleMul vector whole and in uneven slices), hand-picked cases cover in-place results, P == Q with equal and different Z, P == -Q (Jacobian and mixed) and infinity on either side.
 
 ### Phase 8: ECDSA verify (blocking)
 
