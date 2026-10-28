@@ -37,6 +37,7 @@ namespace Secp256k1Udon.Tests
                 CheckLimbs();
                 CheckSha256();
                 CheckField();
+                CheckScalar();
             }
 
             done = true;
@@ -309,26 +310,40 @@ namespace Secp256k1Udon.Tests
             Report("sha256 output at an offset", offsetOk, "digest or surrounding bytes wrong");
         }
 
-        // Phase 5: field arithmetic mod p. Operands sit at odd offsets in one shared buffer. Binary ops run
-        // three ways (separate result, result over a, result over b), unary ops two ways (separate, in place),
-        // and the separate run also checks that the inputs were left alone.
+        // Phase 5: field arithmetic mod p.
         private void CheckField()
         {
             CheckCompare();
+            string[] ops = { "add", "sub", "mul", "sqr", "inv", "reduce" };
+            CheckArithmetic("field", false, ops);
+        }
 
+        // Phase 6: scalar arithmetic mod n.
+        private void CheckScalar()
+        {
+            CheckGeN();
+            string[] ops = { "mul", "inv", "reduce" };
+            CheckArithmetic("scalar", true, ops);
+        }
+
+        // Runs every case in a field or scalar vector list. Operands sit at odd offsets in one shared buffer.
+        // Binary ops run three ways (separate result, result over a, result over b), unary ops two ways
+        // (separate, in place), and the separate run also checks that the inputs were left alone. Square is
+        // also checked against multiplying each mul operand by itself.
+        private void CheckArithmetic(string listName, bool scalar, string[] ops)
+        {
             uint[] buf = new uint[40];
             ulong[] t = new ulong[U256.ProductScratchLength];
             int slotA = 3;
             int slotB = 13;
             int slotR = 22;
             int slotTmp = 31;
-            string[] ops = { "add", "sub", "mul", "sqr", "inv", "reduce" };
             int[] cases = new int[ops.Length];
             int[] bad = new int[ops.Length];
             int sqrVsMul = 0;
             int sqrVsMulBad = 0;
 
-            DataList list = GetList("field");
+            DataList list = GetList(listName);
             for (int i = 0; i < list.Count; i++)
             {
                 DataDictionary entry = list[i].DataDictionary;
@@ -340,21 +355,22 @@ namespace Secp256k1Udon.Tests
                 }
                 if (opIndex < 0)
                 {
-                    Report("field case " + i, false, "unknown op " + op);
+                    Report(listName + " case " + i, false, "unknown op " + op);
                     continue;
                 }
                 string a = entry["a"].String.ToLower();
                 string expected = entry["result"].String.ToLower();
                 DataToken bToken;
                 string b = entry.TryGetValue("b", TokenType.String, out bToken) ? bToken.String.ToLower() : null;
-                bool binary = opIndex <= 2;
-                string label = "field " + op + "(" + a + (binary ? ", " + b : "") + ")";
+                bool binary = op == "add" || op == "sub" || op == "mul";
+                string label = listName + " " + op + "(" + a + (binary ? ", " + b : "") + ")";
                 cases[opIndex]++;
 
                 if (op == "reduce")
                 {
                     if (!LoadLimbs(a, buf, slotR)) { bad[opIndex]++; Report(label, false, "malformed operand"); continue; }
-                    U256.FieldReduce(buf, slotR);
+                    if (scalar) U256.ScalarReduce(buf, slotR);
+                    else U256.FieldReduce(buf, slotR);
                     string got = LimbsHex(buf, slotR);
                     if (got != expected) { bad[opIndex]++; Report(label, false, "expected " + expected + ", got " + got); }
                     continue;
@@ -368,13 +384,13 @@ namespace Secp256k1Udon.Tests
                 }
 
                 // Separate result.
-                ApplyField(opIndex, buf, slotA, slotB, slotR, slotTmp, t);
+                ApplyArithmetic(op, scalar, buf, slotA, slotB, slotR, slotTmp, t);
                 string sep = LimbsHex(buf, slotR);
                 bool inputsKept = LimbsHex(buf, slotA) == a && (!binary || LimbsHex(buf, slotB) == b);
 
                 // Result over a.
                 LoadLimbs(a, buf, slotR);
-                ApplyField(opIndex, buf, slotR, slotB, slotR, slotTmp, t);
+                ApplyArithmetic(op, scalar, buf, slotR, slotB, slotR, slotTmp, t);
                 string overA = LimbsHex(buf, slotR);
 
                 // Result over b.
@@ -382,7 +398,7 @@ namespace Secp256k1Udon.Tests
                 if (binary)
                 {
                     LoadLimbs(b, buf, slotR);
-                    ApplyField(opIndex, buf, slotA, slotR, slotR, slotTmp, t);
+                    ApplyArithmetic(op, scalar, buf, slotA, slotR, slotR, slotTmp, t);
                     overB = LimbsHex(buf, slotR);
                 }
 
@@ -393,37 +409,77 @@ namespace Secp256k1Udon.Tests
                         + (binary ? " / over b " + overB : "") + (inputsKept ? "" : " (inputs modified)"));
                 }
 
-                // Square agrees with multiplying a value by itself, for every mul operand.
                 if (op == "mul")
                 {
-                    U256.FieldMul(buf, slotA, buf, slotA, buf, slotR, t);
+                    ApplyArithmetic("mul", scalar, buf, slotA, slotA, slotR, slotTmp, t);
                     string mulSelf = LimbsHex(buf, slotR);
-                    U256.FieldSqr(buf, slotA, buf, slotR, t);
+                    ApplyArithmetic("sqr", scalar, buf, slotA, slotA, slotR, slotTmp, t);
                     string sqrSelf = LimbsHex(buf, slotR);
                     sqrVsMul++;
                     if (sqrSelf != mulSelf)
                     {
                         sqrVsMulBad++;
-                        Report("field sqr(" + a + ") vs mul(a, a)", false, "sqr " + sqrSelf + ", mul " + mulSelf);
+                        Report(listName + " sqr(" + a + ") vs mul(a, a)", false, "sqr " + sqrSelf + ", mul " + mulSelf);
                     }
                 }
             }
 
             for (int k = 0; k < ops.Length; k++)
             {
-                if (cases[k] == 0) Report("field " + ops[k], false, "no cases in vectors");
-                else if (bad[k] == 0) Report("field " + ops[k] + " (" + cases[k] + " cases)", true, "");
+                if (cases[k] == 0) Report(listName + " " + ops[k], false, "no cases in vectors");
+                else if (bad[k] == 0) Report(listName + " " + ops[k] + " (" + cases[k] + " cases)", true, "");
             }
-            if (sqrVsMulBad == 0) Report("field sqr(a) equals mul(a, a) (" + sqrVsMul + " operands)", sqrVsMul > 0, "no cases");
+            if (sqrVsMulBad == 0) Report(listName + " sqr(a) equals mul(a, a) (" + sqrVsMul + " operands)", sqrVsMul > 0, "no cases");
         }
 
-        private void ApplyField(int opIndex, uint[] buf, int ao, int bo, int ro, int tmpo, ulong[] t)
+        private void ApplyArithmetic(string op, bool scalar, uint[] buf, int ao, int bo, int ro, int tmpo, ulong[] t)
         {
-            if (opIndex == 0) U256.FieldAdd(buf, ao, buf, bo, buf, ro);
-            else if (opIndex == 1) U256.FieldSub(buf, ao, buf, bo, buf, ro);
-            else if (opIndex == 2) U256.FieldMul(buf, ao, buf, bo, buf, ro, t);
-            else if (opIndex == 3) U256.FieldSqr(buf, ao, buf, ro, t);
-            else if (opIndex == 4) U256.FieldInv(buf, ao, buf, ro, buf, tmpo, t);
+            if (op == "add") U256.FieldAdd(buf, ao, buf, bo, buf, ro);
+            else if (op == "sub") U256.FieldSub(buf, ao, buf, bo, buf, ro);
+            else if (scalar)
+            {
+                if (op == "mul") U256.ScalarMul(buf, ao, buf, bo, buf, ro, t);
+                else if (op == "sqr") U256.ScalarSqr(buf, ao, buf, ro, t);
+                else if (op == "inv") U256.ScalarInv(buf, ao, buf, ro, buf, tmpo, t);
+            }
+            else
+            {
+                if (op == "mul") U256.FieldMul(buf, ao, buf, bo, buf, ro, t);
+                else if (op == "sqr") U256.FieldSqr(buf, ao, buf, ro, t);
+                else if (op == "inv") U256.FieldInv(buf, ao, buf, ro, buf, tmpo, t);
+            }
+        }
+
+        // Phase 6: the >= n test, and scalar multiply on inputs that are not below n.
+        private void CheckGeN()
+        {
+            uint[] buf = new uint[24];
+            CheckGeNCase("n - 1 is below n", buf, "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140", false);
+            CheckGeNCase("n is not below n", buf, "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", true);
+            CheckGeNCase("2^256 - 1 is not below n", buf, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", true);
+            CheckGeNCase("p is not below n", buf, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", true);
+            CheckGeNCase("limb 3 above n's is not below n", buf, "fffffffffffffffffffffffffffffffebaaedce7000000000000000000000000", true);
+            CheckGeNCase("limb 3 below n's is below n", buf, "fffffffffffffffffffffffffffffffebaaedce5ffffffffffffffffffffffff", false);
+            CheckGeNCase("limb 4 below n's is below n", buf, "fffffffffffffffffffffffffffffffdffffffffffffffffffffffffffffffff", false);
+
+            // (2^256 - 1)² mod n and (n + 1)·(n + 2) mod n = 2: operands at and above n.
+            ulong[] t = new ulong[U256.ProductScratchLength];
+            LoadLimbs("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", buf, 0);
+            U256.ScalarMul(buf, 0, buf, 0, buf, 8, t);
+            string max = LimbsHex(buf, 8);
+            string maxExpected = "9d671cd581c69bc5e697f5e45bcd07c3e972508f6d0e38f00911af2e084453c3";
+            Report("scalar mul (2^256 - 1)^2", max == maxExpected, "expected " + maxExpected + ", got " + max);
+            LoadLimbs("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142", buf, 0);
+            LoadLimbs("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364143", buf, 8);
+            U256.ScalarMul(buf, 0, buf, 8, buf, 16, t);
+            string small = LimbsHex(buf, 16);
+            Report("scalar mul (n + 1)(n + 2) = 2", small == "0000000000000000000000000000000000000000000000000000000000000002", "got " + small);
+        }
+
+        private void CheckGeNCase(string name, uint[] buf, string a, bool expected)
+        {
+            LoadLimbs(a, buf, 0);
+            Report("scalar " + name, U256.ScalarGeN(buf, 0) == expected, "wrong answer");
         }
 
         // Phase 5: Compare, IsZero and the >= p test on hand-picked values.

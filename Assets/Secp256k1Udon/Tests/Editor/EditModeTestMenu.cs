@@ -1,6 +1,8 @@
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Secp256k1Udon.Tests.Editor
 {
@@ -11,6 +13,11 @@ namespace Secp256k1Udon.Tests.Editor
         [MenuItem("Tools/Secp256k1Udon/Run EditMode Tests")]
         public static void Run()
         {
+            // The test runner asks to save a modified scene with a modal dialog, which blocks unattended runs.
+            // The generated test scene gets marked modified again after Build Test Scene saves it, so save it here.
+            var scene = SceneManager.GetActiveScene();
+            if (scene.isDirty && scene.path == TestSceneBuilder.ScenePath) EditorSceneManager.SaveScene(scene);
+
             var api = ScriptableObject.CreateInstance<TestRunnerApi>();
             api.RegisterCallbacks(new Callbacks());
             api.Execute(new ExecutionSettings(new Filter

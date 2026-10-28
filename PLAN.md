@@ -144,10 +144,10 @@ p = 2^256 - 2^32 - 977.
 
 n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141.
 
-- [ ] Reduce a 256-bit value mod n (the hash `z` can exceed n).
-- [ ] Multiply mod n (Barrett, Montgomery, or simple shift-and-subtract; this runs only a few times per verification, so prefer the simplest correct option).
-- [ ] Inverse mod n (Fermat exponentiation with n-2, or binary extended Euclid).
-- [ ] Tests pass in EditMode and in Udon.
+- [x] Reduce a 256-bit value mod n (the hash `z` can exceed n). `U256.ScalarReduce` (conditional subtract, since 2^256 < 2n) and `U256.ScalarGeN`.
+- [x] Multiply mod n (Barrett, Montgomery, or simple shift-and-subtract; this runs only a few times per verification, so prefer the simplest correct option). `ScalarMul` / `ScalarSqr` share the schoolbook product with the field code, then fold with 2^256 ≡ 2^256 − n (129 bits) four times (512 → 386 → 260 → 257 → 256 bits) and subtract n at most once. Inputs may be any 256-bit values; the same `ulong[ProductScratchLength]` scratch is used.
+- [x] Inverse mod n (Fermat exponentiation with n-2, or binary extended Euclid). `ScalarInv`, Fermat a^(n-2), same signature as `FieldInv`.
+- [x] Tests pass in EditMode and in Udon (162 passed, 0 failed in both).
 
 ### Phase 7: Curve operations
 

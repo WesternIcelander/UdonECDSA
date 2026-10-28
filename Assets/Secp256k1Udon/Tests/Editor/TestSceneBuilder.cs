@@ -14,7 +14,7 @@ namespace Secp256k1Udon.Tests.Editor
     public static class TestSceneBuilder
     {
         private const string LibraryFolder = "Assets/Secp256k1Udon";
-        private const string ScenePath = "Assets/Secp256k1Udon/Tests/TestScene.unity";
+        public const string ScenePath = "Assets/Secp256k1Udon/Tests/TestScene.unity";
         private const string VectorsPath = "Assets/Secp256k1Udon/Tests/Vectors/vectors.json";
         private const string WorldPrefabPath = "Packages/com.vrchat.worlds/Samples/UdonExampleScene/Prefabs/VRCWorld.prefab";
 

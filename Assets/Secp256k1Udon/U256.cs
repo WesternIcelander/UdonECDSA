@@ -6,6 +6,9 @@ namespace Secp256k1Udon
     // otherwise, and results are canonical. The result may alias either input. Static classes cannot hold
     // fields in Udon, so multiply, square and inverse take a caller-owned ulong[ProductScratchLength]
     // (allocate once and reuse; nothing here allocates).
+    //
+    // Scalar arithmetic mod n (the group order) follows the same conventions, but multiply, square and
+    // inverse accept any 256-bit inputs. Results are canonical (below n).
     public static class U256
     {
         public const int ProductScratchLength = 32;
@@ -90,6 +93,19 @@ namespace Secp256k1Udon
 
         public static void FieldMul(uint[] a, int ao, uint[] b, int bo, uint[] r, int ro, ulong[] t)
         {
+            Product(a, ao, b, bo, t);
+            ReduceProduct(t, r, ro);
+        }
+
+        public static void FieldSqr(uint[] a, int ao, uint[] r, int ro, ulong[] t)
+        {
+            SquareProduct(a, ao, t);
+            ReduceProduct(t, r, ro);
+        }
+
+        // 16-limb product a·b into t[0..15]. Operands are copied first, so they may alias anything.
+        private static void Product(uint[] a, int ao, uint[] b, int bo, ulong[] t)
+        {
             for (int i = 0; i < 8; i++)
             {
                 t[ScratchA + i] = a[ao + i];
@@ -109,10 +125,10 @@ namespace Secp256k1Udon
                 }
                 t[i + 8] = carry;
             }
-            ReduceProduct(t, r, ro);
         }
 
-        public static void FieldSqr(uint[] a, int ao, uint[] r, int ro, ulong[] t)
+        // 16-limb square a² into t[0..15], computing each cross product once (36 limb products instead of 64).
+        private static void SquareProduct(uint[] a, int ao, ulong[] t)
         {
             for (int i = 0; i < 8; i++) t[ScratchA + i] = a[ao + i];
             for (int i = 0; i < 16; i++) t[i] = 0;
@@ -143,7 +159,6 @@ namespace Secp256k1Udon
                 t[k + 1] = v & Mask32;
                 c = v >> 32;
             }
-            ReduceProduct(t, r, ro);
         }
 
         // r = a^(p-2) = a⁻¹ mod p (0 for a = 0). Slow (about 256 squares and multiplies); verification does
@@ -224,6 +239,137 @@ namespace Secp256k1Udon
                 v = (ulong)a[ao + i] - borrow;
                 a[ao + i] = (uint)(v & Mask32);
                 borrow = v >> 63;
+            }
+        }
+
+        // Limbs 0..3 of 2^256 - n (129 bits; limb 4 is 1).
+        private const ulong NC0 = 0x2FC9BEBFUL;
+        private const ulong NC1 = 0x402DA173UL;
+        private const ulong NC2 = 0x50B75FC4UL;
+        private const ulong NC3 = 0x45512319UL;
+
+        // Limb i of n.
+        private static uint NLimb(int i)
+        {
+            if (i >= 5) return 0xFFFFFFFFu;
+            if (i == 4) return 0xFFFFFFFEu;
+            if (i == 3) return 0xBAAEDCE6u;
+            if (i == 2) return 0xAF48A03Bu;
+            if (i == 1) return 0xBFD25E8Cu;
+            return 0xD0364141u;
+        }
+
+        // a >= n, for any 256-bit a.
+        public static bool ScalarGeN(uint[] a, int ao)
+        {
+            for (int i = 7; i >= 0; i--)
+            {
+                uint x = a[ao + i];
+                uint y = NLimb(i);
+                if (x != y) return x > y;
+            }
+            return true;
+        }
+
+        // Reduces any 256-bit a (in place) to a mod n. One subtract suffices since 2^256 < 2n.
+        public static void ScalarReduce(uint[] a, int ao)
+        {
+            if (ScalarGeN(a, ao)) AddNC(a, ao);
+        }
+
+        // r = a·b mod n, for any 256-bit a and b (they need not be below n).
+        public static void ScalarMul(uint[] a, int ao, uint[] b, int bo, uint[] r, int ro, ulong[] t)
+        {
+            Product(a, ao, b, bo, t);
+            ReduceProductN(t, r, ro);
+        }
+
+        public static void ScalarSqr(uint[] a, int ao, uint[] r, int ro, ulong[] t)
+        {
+            SquareProduct(a, ao, t);
+            ReduceProductN(t, r, ro);
+        }
+
+        // r = a^(n-2) = a⁻¹ mod n (0 for a ≡ 0), for any 256-bit a. About 256 squares and 200 multiplies;
+        // runs once per verification (w = s⁻¹). tmp[to..to+7] holds a copy of a.
+        public static void ScalarInv(uint[] a, int ao, uint[] r, int ro, uint[] tmp, int to, ulong[] t)
+        {
+            Copy(a, ao, tmp, to);
+            for (int i = 1; i < 8; i++) r[ro + i] = 0u;
+            r[ro] = 1u;
+            for (int bit = 255; bit >= 0; bit--)
+            {
+                ScalarSqr(r, ro, r, ro, t);
+                int limb = bit >> 5;
+                // n - 2 differs from n only in limb 0.
+                uint e = limb == 0 ? 0xD036413Fu : NLimb(limb);
+                if (((e >> (bit & 31)) & 1u) != 0u) ScalarMul(r, ro, tmp, to, r, ro, t);
+            }
+        }
+
+        // Reduces the 16-limb product in t[0..15] mod n into r, using 2^256 ≡ 2^256 - n (mod n). Each fold
+        // replaces the part above 2^256 by its product with 2^256 - n: 512 -> 386 -> 260 -> 257 -> 256 bits.
+        private static void ReduceProductN(ulong[] t, uint[] r, int ro)
+        {
+            FoldN(t, 0, 8, 16, 13);
+            FoldN(t, 16, 5, 0, 9);
+            FoldN(t, 0, 1, 16, 9);
+            // The value is now below 2^256 + 2^134: if limb 8 is set, the low part is below 2^134, so this
+            // last fold cannot carry past 2^256.
+            FoldN(t, 16, 1, 0, 9);
+            for (int i = 0; i < 8; i++) r[ro + i] = (uint)(t[i] & Mask32);
+            if (ScalarGeN(r, ro)) AddNC(r, ro);
+        }
+
+        // t[dst..dst+len-1] = t[src..src+7] + t[src+8..src+8+highLen-1]·(2^256 - n). The ranges must not
+        // overlap, and len must be large enough to hold the sum (the caller's bounds guarantee no carry out).
+        private static void FoldN(ulong[] t, int src, int highLen, int dst, int len)
+        {
+            for (int k = 0; k < len; k++) t[dst + k] = k < 8 ? t[src + k] : 0UL;
+            for (int i = 0; i < highLen; i++)
+            {
+                ulong h = t[src + 8 + i];
+                if (h == 0UL) continue;
+                int d = dst + i;
+                ulong v = t[d] + h * NC0;
+                t[d] = v & Mask32;
+                v = t[d + 1] + h * NC1 + (v >> 32);
+                t[d + 1] = v & Mask32;
+                v = t[d + 2] + h * NC2 + (v >> 32);
+                t[d + 2] = v & Mask32;
+                v = t[d + 3] + h * NC3 + (v >> 32);
+                t[d + 3] = v & Mask32;
+                v = t[d + 4] + h + (v >> 32);
+                t[d + 4] = v & Mask32;
+                ulong carry = v >> 32;
+                for (int k = d + 5; carry != 0; k++)
+                {
+                    v = t[k] + carry;
+                    t[k] = v & Mask32;
+                    carry = v >> 32;
+                }
+            }
+        }
+
+        // a += 2^256 - n mod 2^256, in place (subtracts n when a >= n).
+        private static void AddNC(uint[] a, int ao)
+        {
+            ulong v = (ulong)a[ao] + NC0;
+            a[ao] = (uint)(v & Mask32);
+            v = (ulong)a[ao + 1] + NC1 + (v >> 32);
+            a[ao + 1] = (uint)(v & Mask32);
+            v = (ulong)a[ao + 2] + NC2 + (v >> 32);
+            a[ao + 2] = (uint)(v & Mask32);
+            v = (ulong)a[ao + 3] + NC3 + (v >> 32);
+            a[ao + 3] = (uint)(v & Mask32);
+            v = (ulong)a[ao + 4] + 1UL + (v >> 32);
+            a[ao + 4] = (uint)(v & Mask32);
+            ulong carry = v >> 32;
+            for (int i = 5; i < 8 && carry != 0; i++)
+            {
+                v = (ulong)a[ao + i] + carry;
+                a[ao + i] = (uint)(v & Mask32);
+                carry = v >> 32;
             }
         }
 
