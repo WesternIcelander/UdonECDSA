@@ -110,7 +110,7 @@ Observations from this example:
   - [x] At least 10 valid `(data, signatureHex)` pairs with the test public key. Include arbitrary `data` strings (empty, plain text, JSON, non-ASCII), since the library must not depend on the content.
   - [x] Invalid cases: modified `data` (one character), modified `r`, modified `s`, `r = 0`, `s = 0`, `r >= n`, `s >= n`, wrong public key, a high-s variant of a valid signature (expected: valid), `v` changed (expected: valid), malformed signature hex (wrong length, non-hex characters).
   - [x] Public key cases: valid uncompressed key, key not on the curve, wrong prefix byte, wrong length.
-  - File: `Assets/Secp256k1Udon/Tests/Vectors/vectors.json` (ASCII, non-ASCII text as `\uXXXX`). Every entry with `data` also stores its expected `utf8` bytes. Beyond the list above it has field/scalar `add`, `sub` and `reduce` (for non-canonical values in [p, 2^256) and z in [n, 2^256)), unpaired-surrogate UTF-8 cases (U+FFFD), `doubleMul` vectors for u1·G + u2·Q (including the doubling and infinity cases), an n − s counterpart of every valid signature (`signatureFlips`), and uppercase-hex signatures and keys. Rerunning the generator makes a new key pair and new signatures. ECSandbox agreed with every expected result.
+  - File: `Assets/Secp256k1Udon/Tests/Vectors/vectors.json` (ASCII, non-ASCII text as `\uXXXX`). Every entry with `data` also stores its expected `utf8` bytes, and `data` again as hex UTF-16 code units (`utf16`), which the tests use instead of the parsed `data` (see Phase 0 findings on VRCJson). Beyond the list above it has field/scalar `add`, `sub` and `reduce` (for non-canonical values in [p, 2^256) and z in [n, 2^256)), unpaired-surrogate UTF-8 cases (U+FFFD), `doubleMul` vectors for u1·G + u2·Q (including the doubling and infinity cases), an n − s counterpart of every valid signature (`signatureFlips`), and uppercase-hex signatures and keys. Rerunning the generator makes a new key pair and new signatures. ECSandbox agreed with every expected result.
 
 ### Phase 2: Testing harness
 
@@ -120,10 +120,10 @@ Observations from this example:
 
 ### Phase 3: Byte utilities
 
-- [ ] `Hex`: parse hex (either case) to `byte[]`, reject odd length and non-hex characters; encode `byte[]` to lowercase hex.
-- [ ] `Utf8`: encode `string` to UTF-8 bytes, handling surrogate pairs; replace unpaired surrogates with U+FFFD bytes.
-- [ ] Conversions between 32-byte big-endian `byte[]` and 8-limb `uint[]`.
-- [ ] Tests pass in EditMode and in Udon.
+- [x] `Hex`: parse hex (either case) to `byte[]`, reject odd length and non-hex characters; encode `byte[]` to lowercase hex. `Hex.Decode` returns null on malformed input (never throws).
+- [x] `Utf8`: encode `string` to UTF-8 bytes, handling surrogate pairs; replace unpaired surrogates with U+FFFD bytes.
+- [x] Conversions between 32-byte big-endian `byte[]` and 8-limb `uint[]` (`U256.FromBytes` / `U256.ToBytes`, with offsets on both sides).
+- [x] Tests pass in EditMode and in Udon (102 passed, 0 failed in both).
 
 ### Phase 4: SHA-256
 
@@ -200,6 +200,8 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 - `Encoding.UTF8`: exposed. `GetBytes` on a 2-byte, 3-byte and 4-byte (surrogate pair) character gives the expected 10 bytes (`Utf8Probe`). The plan still uses the manual encoder.
 - `Stopwatch`: exposed (`StartNew`, `Stop`, `Elapsed`, `ElapsedTicks`, `Frequency`, 10 MHz). For a rough sense of Udon speed: a 10,000-iteration `sum += i` loop took 2.47 ms in the editor, about 0.25 µs per iteration (`StopwatchProbe`).
 - Integer overflow behaviour: arithmetic wraps like unchecked C#. `uint`, `ulong` and `int` add, subtract, multiply and shift all wrap, and the `(ulong)a * b` full product is correct (`Phase0Probe`, 15/15 pass). **Narrowing casts do not wrap.** Udon compiles them to checked `System.Convert` calls (`SystemConvert.__ToUInt32__SystemUInt64__SystemUInt32`), so `(uint)someUlong` with a value above `uint.MaxValue` throws "Value was either too large or too small for a UInt32" and halts the behaviour. Masking first works: `(uint)(x & 0xFFFFFFFFUL)`, `(byte)(x & 0xFFu)`. Expect the same for any other narrowing or sign-changing cast, e.g. `(uint)` of a negative `int`.
+- `VRCJson` mis-parses surrogate escapes in JSON strings (found in Phase 3). `"x\ude00y"` parses to `x\u`, and `"cat 🐈"` to `cat \uudc08`; BMP escapes such as `á` parse correctly. Any string outside the BMP read through `VRCJson` is wrong, so the vectors carry each `data` string as hex UTF-16 code units (`utf16`) and `VectorTests.GetData` rebuilds the string from those. This only affects the tests: the library never parses JSON.
+- The EditMode test runner leaves an unsaved "Untitled" scene open. Before a Play Mode run that follows it, run `Tools/Secp256k1Udon/Build Test Scene` (which opens the test scene), or Play Mode waits for done texts that never come.
 
 ## Measurements
 
