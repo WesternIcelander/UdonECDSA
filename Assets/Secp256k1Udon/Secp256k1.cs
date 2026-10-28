@@ -16,13 +16,20 @@ namespace Secp256k1Udon
         public const int AffineLength = 16;
 
         // Scratch layout: 12 field temporaries, then G (affine), Q (affine), G + Q and the accumulator
-        // (Jacobian) of the double multiplication.
+        // (Jacobian) of the double multiplication, then the verification scalars: r, s, u1, u2 and one temporary.
         private const int TempLength = 96;
         public const int GOffset = 96;
         public const int QOffset = 112;
         private const int GQOffset = 128;
         public const int AccumulatorOffset = 152;
-        public const int ScratchLength = 176;
+        public const int ROffset = 176;
+        public const int SOffset = 184;
+        public const int U1Offset = 192;
+        public const int U2Offset = 200;
+        private const int VerifyTemp = 208;
+        public const int ScratchLength = 216;
+
+        public const int SignatureHexLength = 130;
 
         private const int T0 = 0;
         private const int T1 = 8;
@@ -239,6 +246,61 @@ namespace Secp256k1Udon
                 else if (b1) AddAffine(s, AccumulatorOffset, s, GOffset, s, AccumulatorOffset, s, t);
                 else if (b2) AddAffine(s, AccumulatorOffset, s, QOffset, s, AccumulatorOffset, s, t);
             }
+        }
+
+        // ECDSA verification of a 32-byte message hash at hash[ho..] (used directly as z, reduced mod n) against
+        // signatureHex and the affine public key at q[qo..] (from LoadPublicKey). The signature is 130 hex chars,
+        // either case: r || s || v, with v ignored (but still required to be hex). High s is accepted. Returns
+        // false for any malformed or invalid input and never throws. Allocates nothing.
+        //
+        // The steps are public so the frame-sliced verifier can spread them over frames: VerifyParse, VerifySetup,
+        // DoubleMulBits(s, U1Offset, s, U2Offset, 255, 256 in slices) and VerifyFinish.
+        public static bool VerifyHash(byte[] hash, int ho, string signatureHex, uint[] q, int qo, uint[] s, ulong[] t)
+        {
+            if (hash == null || ho < 0 || hash.Length - ho < 32) return false;
+            if (!VerifyParse(signatureHex, s)) return false;
+            VerifySetup(hash, ho, q, qo, s, t);
+            DoubleMulBits(s, U1Offset, s, U2Offset, 255, 256, s, t);
+            return VerifyFinish(s, t);
+        }
+
+        // Parses the signature into r and s (at ROffset and SOffset) and checks 1 <= r, s <= n - 1. Returns false
+        // for a null signature, a length other than 130, any non-hex character (v included) or r, s out of range.
+        public static bool VerifyParse(string signatureHex, uint[] s)
+        {
+            if (signatureHex == null || signatureHex.Length != SignatureHexLength) return false;
+            if (!Hex.DecodeLimbs(signatureHex, 0, s, ROffset)) return false;
+            if (!Hex.DecodeLimbs(signatureHex, 64, s, SOffset)) return false;
+            if (!Hex.IsHex(signatureHex, 128, 2)) return false;
+            if (U256.IsZero(s, ROffset) || U256.ScalarGeN(s, ROffset)) return false;
+            if (U256.IsZero(s, SOffset) || U256.ScalarGeN(s, SOffset)) return false;
+            return true;
+        }
+
+        // After VerifyParse: z = hash mod n, w = s⁻¹, u1 = z·w and u2 = r·w (mod n), then DoubleMulInit with Q.
+        // hash[ho..ho+31] must exist.
+        public static void VerifySetup(byte[] hash, int ho, uint[] q, int qo, uint[] s, ulong[] t)
+        {
+            U256.FromBytes(hash, ho, s, U1Offset);
+            U256.ScalarReduce(s, U1Offset);                                 // z
+            U256.ScalarInv(s, SOffset, s, U2Offset, s, VerifyTemp, t);      // w
+            U256.ScalarMul(s, U1Offset, s, U2Offset, s, U1Offset, t);       // u1 = z·w
+            U256.ScalarMul(s, ROffset, s, U2Offset, s, U2Offset, t);        // u2 = r·w
+            DoubleMulInit(q, qo, s, t);
+        }
+
+        // After the double multiplication: R = u1·G + u2·Q is in the accumulator. Accepts if R is finite and its
+        // affine x is r or r + n (the x coordinates that reduce to r mod n), compared without inverting:
+        // x = X/Z², so test r·Z² ≡ X (mod p), and (r + n)·Z² ≡ X when r + n < p.
+        public static bool VerifyFinish(uint[] s, ulong[] t)
+        {
+            if (IsInfinity(s, AccumulatorOffset)) return false;
+            U256.FieldSqr(s, AccumulatorOffset + 16, s, T0, t);             // Z²
+            U256.FieldMul(s, ROffset, s, T0, s, T1, t);
+            if (U256.Compare(s, T1, s, AccumulatorOffset) == 0) return true;
+            if (!U256.AddN(s, ROffset, s, VerifyTemp) || U256.FieldGeP(s, VerifyTemp)) return false;
+            U256.FieldMul(s, VerifyTemp, s, T0, s, T1, t);
+            return U256.Compare(s, T1, s, AccumulatorOffset) == 0;
         }
 
         // Parses and validates an uncompressed public key (130 hex chars, either case: 04 || x || y) into the

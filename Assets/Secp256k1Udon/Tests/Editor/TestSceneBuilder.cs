@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using UdonSharp;
 using UdonSharp.Compiler;
 using UdonSharpEditor;
@@ -28,6 +29,10 @@ namespace Secp256k1Udon.Tests.Editor
             var worldPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(WorldPrefabPath);
             PrefabUtility.InstantiatePrefab(worldPrefab, scene);
 
+            var vectorsAsset = AssetDatabase.LoadAssetAtPath<TextAsset>(VectorsPath);
+            var verifier = AddVerifier("SignatureVerifier", TestPublicKey(vectorsAsset.text));
+            var invalidKeyVerifier = AddVerifier("SignatureVerifier (invalid key)", InvalidPublicKey);
+
             var testAssembly = typeof(Phase0Probe).Assembly;
             var testTypes = testAssembly.GetTypes()
                 .Where(t => typeof(UdonSharpBehaviour).IsAssignableFrom(t) && !t.IsAbstract)
@@ -38,13 +43,35 @@ namespace Secp256k1Udon.Tests.Editor
                 UdonSharpBehaviour behaviour = UdonSharpUndo.AddComponent(go, type);
                 if (behaviour is VectorTests vectorTests)
                 {
-                    vectorTests.vectors = AssetDatabase.LoadAssetAtPath<TextAsset>(VectorsPath);
+                    vectorTests.vectors = vectorsAsset;
+                    vectorTests.verifier = verifier;
+                    vectorTests.invalidKeyVerifier = invalidKeyVerifier;
                     UdonSharpEditorUtility.CopyProxyToUdon(vectorTests);
                 }
             }
 
             EditorSceneManager.SaveScene(scene, ScenePath);
             Debug.Log("[TestSceneBuilder] built " + ScenePath);
+        }
+
+        // The point (0, 0), which is not on the curve.
+        public const string InvalidPublicKey =
+            "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+        public static string TestPublicKey(string vectorsJson)
+        {
+            var match = Regex.Match(vectorsJson, "\"testPublicKey\":\\s*\"([0-9a-fA-F]+)\"");
+            if (!match.Success) throw new InvalidOperationException("vectors.json has no testPublicKey");
+            return match.Groups[1].Value;
+        }
+
+        private static SignatureVerifier AddVerifier(string name, string publicKeyHex)
+        {
+            var go = new GameObject(name);
+            var verifier = (SignatureVerifier)UdonSharpUndo.AddComponent(go, typeof(SignatureVerifier));
+            verifier.publicKeyHex = publicKeyHex;
+            UdonSharpEditorUtility.CopyProxyToUdon(verifier);
+            return verifier;
         }
 
         // UdonSharp only creates a script's program asset from its editor UI, so create any that are missing.

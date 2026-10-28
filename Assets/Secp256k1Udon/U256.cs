@@ -271,6 +271,19 @@ namespace Secp256k1Udon
             return true;
         }
 
+        // r = a + n. Returns false, with r holding the sum mod 2^256, if the sum reaches 2^256. r may alias a.
+        public static bool AddN(uint[] a, int ao, uint[] r, int ro)
+        {
+            ulong carry = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                ulong v = (ulong)a[ao + i] + NLimb(i) + carry;
+                r[ro + i] = (uint)(v & Mask32);
+                carry = v >> 32;
+            }
+            return carry == 0;
+        }
+
         // Reduces any 256-bit a (in place) to a mod n. One subtract suffices since 2^256 < 2n.
         public static void ScalarReduce(uint[] a, int ao)
         {

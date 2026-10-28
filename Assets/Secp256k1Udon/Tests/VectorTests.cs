@@ -11,6 +11,10 @@ namespace Secp256k1Udon.Tests
     public class VectorTests : UdonSharpBehaviour
     {
         public TextAsset vectors;
+        // Verifiers holding the vectors' test public key and an invalid key (set by the test scene builder and the
+        // EditMode test).
+        public SignatureVerifier verifier;
+        public SignatureVerifier invalidKeyVerifier;
 
         [HideInInspector] public int passed;
         [HideInInspector] public int failed;
@@ -18,31 +22,71 @@ namespace Secp256k1Udon.Tests
 
         private DataDictionary root;
 
+        private int step;
+
+        // Udon halts a behaviour after 10 seconds in one event, so in Play Mode the checks run as steps, one per
+        // frame (each signature case is a step of its own).
         private void Start()
         {
-            RunAll();
+            BeginRun();
+            RunNextStep();
         }
 
+        public void RunNextStep()
+        {
+            if (RunStep()) SendCustomEventDelayedFrames(nameof(RunNextStep), 1);
+        }
+
+        // EditMode: every step in one call.
         public void RunAll()
+        {
+            BeginRun();
+            while (RunStep()) { }
+        }
+
+        private void BeginRun()
         {
             passed = 0;
             failed = 0;
             done = false;
+            step = 0;
+        }
 
-            if (LoadVectors())
+        // Runs the next step; returns false once the run is done.
+        private bool RunStep()
+        {
+            int current = step++;
+            if (current == 0)
             {
+                if (!LoadVectors()) return Finish();
                 CheckSections();
                 CheckHex();
                 CheckUtf8();
                 CheckLimbs();
                 CheckSha256();
-                CheckField();
-                CheckScalar();
-                CheckCurve();
+                return true;
             }
+            if (current == 1) { CheckField(); return true; }
+            if (current == 2) { CheckScalar(); return true; }
+            if (current == 3) { CheckCurve(); return true; }
+            if (current == 4) { BeginEcdsa(); return true; }
 
+            int index = current - 5;
+            int signatures = GetList("signatures").Count;
+            if (index < signatures) { CheckSignatureEntry("signatures", index); return true; }
+            index -= signatures;
+            int flips = GetList("signatureFlips").Count;
+            if (index < flips) { CheckSignatureEntry("signatureFlips", index); return true; }
+            index -= flips;
+            if (index == 0) { EndEcdsa(); return true; }
+            return Finish();
+        }
+
+        private bool Finish()
+        {
             done = true;
             Debug.Log("[VectorTests] done: " + passed + " passed, " + failed + " failed");
+            return false;
         }
 
         private bool LoadVectors()
@@ -718,6 +762,176 @@ namespace Secp256k1Udon.Tests
                 }
             }
             Report("public key null rejected", !Secp256k1.LoadPublicKey(null, key, 2, s, t), "accepted");
+        }
+
+        // Phase 8: blocking ECDSA verification, through the static core with each entry's own key, and through
+        // the SignatureVerifier behaviour for entries signed against the test public key.
+        // Split over steps (BeginEcdsa, one CheckSignatureEntry per case, EndEcdsa) to stay within Udon's time limit.
+        private uint[] ecdsaScratch;
+        private ulong[] ecdsaProduct;
+        private uint[] ecdsaSha;
+        private int signaturesViaVerifier;
+        private int flipsViaVerifier;
+
+        private void BeginEcdsa()
+        {
+            ecdsaScratch = Secp256k1.NewScratch();
+            ecdsaProduct = new ulong[U256.ProductScratchLength];
+            ecdsaSha = Sha256.NewScratch();
+            signaturesViaVerifier = 0;
+            flipsViaVerifier = 0;
+            CheckEcdsaHelpers();
+            CheckHashVectors(ecdsaScratch, ecdsaProduct);
+        }
+
+        private void EndEcdsa()
+        {
+            ReportViaVerifier("signatures", signaturesViaVerifier);
+            ReportViaVerifier("signatureFlips", flipsViaVerifier);
+            CheckVerifierEdges(ecdsaScratch, ecdsaProduct, ecdsaSha);
+        }
+
+        private void ReportViaVerifier(string listName, int count)
+        {
+            Report("ecdsa " + listName + " ran through SignatureVerifier (" + count + " cases)", verifier != null && count > 0,
+                verifier == null ? "no verifier assigned" : "no entry uses the test public key");
+        }
+
+        // Hex.DecodeLimbs, Hex.IsHex and U256.AddN, which the signature parser and the final comparison use.
+        private void CheckEcdsaHelpers()
+        {
+            string value = "0123456789abcdefFEDCBA9876543210fedcba98765432100123456789ABCDEF";
+            uint[] buf = new uint[18];
+            bool decoded = Hex.DecodeLimbs("zz" + value, 2, buf, 1);
+            Report("hex decode limbs at offsets", decoded && LimbsHex(buf, 1) == value.ToLower() && buf[0] == 0u && buf[9] == 0u,
+                "got " + LimbsHex(buf, 1));
+            Report("hex decode limbs rejects non-hex", !Hex.DecodeLimbs(value.Substring(0, 63) + "g", 0, buf, 0), "accepted");
+            Report("hex is hex", Hex.IsHex("x0aFx", 1, 3) && !Hex.IsHex("x0aFx", 1, 4) && Hex.IsHex("", 0, 0), "wrong answer");
+
+            string n = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+            LoadLimbs("0000000000000000000000000000000000000000000000000000000000000001", buf, 0);
+            bool fits = U256.AddN(buf, 0, buf, 8);
+            Report("scalar add n: 1 + n", fits && LimbsHex(buf, 8) == "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142",
+                "got " + LimbsHex(buf, 8));
+            // 2^256 - n = 14551231950b75fc4402da1732fc9bebf: the smallest value whose sum overflows.
+            LoadLimbs("000000000000000000000000000000014551231950b75fc4402da1732fc9bebe", buf, 0);
+            fits = U256.AddN(buf, 0, buf, 0);
+            Report("scalar add n: largest that fits (in place)", fits && LimbsHex(buf, 0) == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "got " + LimbsHex(buf, 0));
+            LoadLimbs("000000000000000000000000000000014551231950b75fc4402da1732fc9bebf", buf, 0);
+            Report("scalar add n: smallest that overflows", !U256.AddN(buf, 0, buf, 8) && U256.IsZero(buf, 8), "got " + LimbsHex(buf, 8));
+            LoadLimbs(n, buf, 0);
+            Report("scalar add n: n + n overflows", !U256.AddN(buf, 0, buf, 8), "fit");
+        }
+
+        private void CheckHashVectors(uint[] s, ulong[] t)
+        {
+            uint[] key = new uint[Secp256k1.AffineLength];
+            DataList list = GetList("hashVectors");
+            for (int i = 0; i < list.Count; i++)
+            {
+                DataDictionary entry = list[i].DataDictionary;
+                string name = "ecdsa hash: " + entry["name"].String;
+                bool expected = entry["valid"].Boolean;
+                byte[] hash = Hex.Decode(entry["hash"].String);
+                if (hash == null || hash.Length != 32 || !Secp256k1.LoadPublicKey(entry["publicKey"].String, key, 0, s, t))
+                {
+                    Report(name, false, "malformed hash or public key");
+                    continue;
+                }
+                bool got = Secp256k1.VerifyHash(hash, 0, entry["signature"].String, key, 0, s, t);
+                Report(name, got == expected, "expected " + (expected ? "valid" : "invalid"));
+
+                // The same hash at an offset inside a larger buffer.
+                byte[] shifted = new byte[40];
+                for (int j = 0; j < 32; j++) shifted[j + 5] = hash[j];
+                got = Secp256k1.VerifyHash(shifted, 5, entry["signature"].String, key, 0, s, t);
+                Report(name + " (hash at an offset)", got == expected, "expected " + (expected ? "valid" : "invalid"));
+            }
+        }
+
+        // One signature case: through the static core with the entry's own key, and through SignatureVerifier
+        // (Verify and VerifyHash) when the entry uses the test public key.
+        private void CheckSignatureEntry(string listName, int i)
+        {
+            uint[] s = ecdsaScratch;
+            ulong[] t = ecdsaProduct;
+            uint[] key = new uint[Secp256k1.AffineLength];
+            byte[] hash = new byte[32];
+            DataDictionary entry = GetList(listName)[i].DataDictionary;
+            string name = "ecdsa " + listName + ": " + entry["name"].String;
+            bool expected = entry["valid"].Boolean;
+            string expectedText = expected ? "valid" : "invalid";
+            string data = GetData(entry);
+            string publicKey = entry["publicKey"].String;
+            string signature = entry["signature"].String;
+            if (data == null || !Secp256k1.LoadPublicKey(publicKey, key, 0, s, t))
+            {
+                Report(name, false, "malformed data or public key");
+                return;
+            }
+
+            Sha256.Hash(Utf8.Encode(data), ecdsaSha, hash, 0);
+            bool got = Secp256k1.VerifyHash(hash, 0, signature, key, 0, s, t);
+            Report(name, got == expected, "expected " + expectedText);
+
+            if (verifier != null && publicKey.ToLower() == root["testPublicKey"].String)
+            {
+                if (listName == "signatures") signaturesViaVerifier++;
+                else flipsViaVerifier++;
+                Report(name + " (SignatureVerifier.Verify)", verifier.Verify(data, signature) == expected, "expected " + expectedText);
+                Report(name + " (SignatureVerifier.VerifyHash)", verifier.VerifyHash(hash, signature) == expected, "expected " + expectedText);
+            }
+        }
+
+        // Inputs the vectors cannot express (null, short hashes) and the verifiers' key handling.
+        private void CheckVerifierEdges(uint[] s, ulong[] t, uint[] sha)
+        {
+            DataList list = GetList("signatures");
+            DataDictionary entry = list[0].DataDictionary;
+            string data = GetData(entry);
+            string signature = entry["signature"].String;
+            bool baseValid = entry["valid"].Boolean;
+            Report("ecdsa edge cases use a valid signature", baseValid && data != null, "first signature entry is not valid");
+
+            uint[] key = new uint[Secp256k1.AffineLength];
+            byte[] hash = new byte[32];
+            Secp256k1.LoadPublicKey(entry["publicKey"].String, key, 0, s, t);
+            Sha256.Hash(Utf8.Encode(data), sha, hash, 0);
+            Report("ecdsa core: null hash rejected", !Secp256k1.VerifyHash(null, 0, signature, key, 0, s, t), "accepted");
+            Report("ecdsa core: 31-byte hash rejected", !Secp256k1.VerifyHash(new byte[31], 0, signature, key, 0, s, t), "accepted");
+            Report("ecdsa core: hash past the buffer end rejected", !Secp256k1.VerifyHash(hash, 1, signature, key, 0, s, t), "accepted");
+            Report("ecdsa core: negative hash offset rejected", !Secp256k1.VerifyHash(hash, -1, signature, key, 0, s, t), "accepted");
+            Report("ecdsa core: null signature rejected", !Secp256k1.VerifyHash(hash, 0, null, key, 0, s, t), "accepted");
+            Report("ecdsa core: valid again after rejections", Secp256k1.VerifyHash(hash, 0, signature, key, 0, s, t), "rejected");
+
+            if (verifier == null)
+            {
+                Report("ecdsa SignatureVerifier assigned", false, "no verifier assigned");
+            }
+            else
+            {
+                Report("ecdsa SignatureVerifier key is valid", verifier.IsKeyValid(), "rejected the test public key");
+                Report("ecdsa SignatureVerifier: null data rejected", !verifier.Verify(null, signature), "accepted");
+                Report("ecdsa SignatureVerifier: null signature rejected", !verifier.Verify(data, null), "accepted");
+                Report("ecdsa SignatureVerifier: null hash rejected", !verifier.VerifyHash(null, signature), "accepted");
+                Report("ecdsa SignatureVerifier: 31-byte hash rejected", !verifier.VerifyHash(new byte[31], signature), "accepted");
+                byte[] longHash = new byte[33];
+                for (int j = 0; j < 32; j++) longHash[j] = hash[j];
+                Report("ecdsa SignatureVerifier: 33-byte hash rejected", !verifier.VerifyHash(longHash, signature), "accepted");
+                Report("ecdsa SignatureVerifier: valid again after rejections", verifier.Verify(data, signature), "rejected");
+            }
+
+            if (invalidKeyVerifier == null)
+            {
+                Report("ecdsa invalid-key SignatureVerifier assigned", false, "no verifier assigned");
+            }
+            else
+            {
+                Report("ecdsa invalid-key SignatureVerifier: key rejected", !invalidKeyVerifier.IsKeyValid(), "accepted");
+                Report("ecdsa invalid-key SignatureVerifier: Verify fails", !invalidKeyVerifier.Verify(data, signature), "accepted");
+                Report("ecdsa invalid-key SignatureVerifier: VerifyHash fails", !invalidKeyVerifier.VerifyHash(hash, signature), "accepted");
+            }
         }
 
         private string FindPoint(string name)

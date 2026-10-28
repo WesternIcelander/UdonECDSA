@@ -161,15 +161,15 @@ n = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141.
 
 Inputs are `data` (opaque string) and `signatureHex`. The library does not inspect the content of `data`.
 
-- [ ] Parse signature: exactly 130 hex chars, split into `r`, `s`, ignore `v`.
-- [ ] Reject unless `1 <= r <= n-1` and `1 <= s <= n-1`.
-- [ ] `z = SHA-256(UTF-8(data)) mod n`.
-- [ ] Split the core into a hash-level method (`VerifyHash(byte[] hash32, string signatureHex)`) that `Verify` calls after hashing, so hash-level vectors such as the ECSandbox example can be tested directly.
-- [ ] `w = s⁻¹ mod n`, `u1 = z·w mod n`, `u2 = r·w mod n`.
-- [ ] `R = u1·G + u2·Q`; reject if `R` is at infinity.
-- [ ] Without inverting: accept if `r·Z² ≡ X (mod p)`; otherwise, if `r + n < p`, accept if `(r + n)·Z² ≡ X (mod p)`; otherwise reject.
-- [ ] Any malformed input returns `false` without throwing (Udon has no try/catch, so an exception would halt the behaviour).
-- [ ] All valid and invalid vectors give the expected result in EditMode and in Udon.
+- [x] Parse signature: exactly 130 hex chars, split into `r`, `s`, ignore `v`. `Secp256k1.VerifyParse` decodes `r` and `s` straight into limbs (`Hex.DecodeLimbs`, no allocation); `v` is ignored but must still be hex.
+- [x] Reject unless `1 <= r <= n-1` and `1 <= s <= n-1`.
+- [x] `z = SHA-256(UTF-8(data)) mod n`.
+- [x] Split the core into a hash-level method (`VerifyHash(byte[] hash32, string signatureHex)`) that `Verify` calls after hashing, so hash-level vectors such as the ECSandbox example can be tested directly. The static core is `Secp256k1.VerifyHash(hash, offset, signatureHex, q, qo, scratch, product)`, built from public steps (`VerifyParse`, `VerifySetup`, `DoubleMulBits` on `U1Offset`/`U2Offset`, `VerifyFinish`) for Phase 9 to slice. `SignatureVerifier` (inspector field `publicKeyHex`) holds the key and exposes `bool Verify(string data, string signatureHex)` and `bool VerifyHash(byte[] hash32, string signatureHex)`; it validates the key once, at `Start` or first use, and an invalid key logs an error and fails every verification.
+- [x] `w = s⁻¹ mod n`, `u1 = z·w mod n`, `u2 = r·w mod n`.
+- [x] `R = u1·G + u2·Q`; reject if `R` is at infinity.
+- [x] Without inverting: accept if `r·Z² ≡ X (mod p)`; otherwise, if `r + n < p`, accept if `(r + n)·Z² ≡ X (mod p)`; otherwise reject. (`U256.AddN` gives `r + n` and reports overflow past 2^256.)
+- [x] Any malformed input returns `false` without throwing (Udon has no try/catch, so an exception would halt the behaviour). Covered: null, short or offset-past-the-end hashes, null data and signatures, every malformed signature vector, an invalid key.
+- [x] All valid and invalid vectors give the expected result in EditMode and in Udon (420 passed, 0 failed in both), through the static core with each entry's key and through `SignatureVerifier.Verify`/`VerifyHash` for entries using the test key. Udon halts a behaviour after 10 s in one event, so `VectorTests` now runs in Play Mode as steps, one per frame (each signature case is a step); the EditMode `RunAll` runs every step in one call. The test scene has a `SignatureVerifier` with the test key and one with an invalid key.
 
 ### Phase 9: Frame-sliced verifier
 

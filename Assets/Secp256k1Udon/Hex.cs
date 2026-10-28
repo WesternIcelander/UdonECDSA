@@ -23,6 +23,36 @@ namespace Secp256k1Udon
             return bytes;
         }
 
+        // 64 hex chars (either case) at hex[offset..] as a big-endian 256-bit number -> 8 limbs at dst[dstOffset..]
+        // (U256 order). Returns false, possibly with dst partly written, on any non-hex character. The caller
+        // checks that the 64 chars exist. Allocates nothing.
+        public static bool DecodeLimbs(string hex, int offset, uint[] dst, int dstOffset)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                uint limb = 0u;
+                int c = offset + 56 - 8 * i;
+                for (int j = 0; j < 8; j++)
+                {
+                    int nibble = Nibble(hex[c + j]);
+                    if (nibble < 0) return false;
+                    limb = (limb << 4) | (uint)nibble;
+                }
+                dst[dstOffset + i] = limb;
+            }
+            return true;
+        }
+
+        // True if hex[offset..offset+length-1] are all hex characters (either case). The caller checks the range exists.
+        public static bool IsHex(string hex, int offset, int length)
+        {
+            for (int i = offset; i < offset + length; i++)
+            {
+                if (Nibble(hex[i]) < 0) return false;
+            }
+            return true;
+        }
+
         public static string Encode(byte[] bytes)
         {
             char[] chars = new char[bytes.Length * 2];
