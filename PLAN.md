@@ -138,7 +138,7 @@ p = 2^256 - 2^32 - 977.
 - [x] Multiply and square: 8x8 schoolbook product into 16 limbs, then reduce using 2^256 ≡ 0x1000003D1 (mod p): fold the high half twice, then a final conditional subtract. `FieldMul`; `FieldSqr` computes each cross product once (36 limb products instead of 64). A carry out of the second fold is folded once more before the conditional subtract.
 - [x] Inverse is not needed for verification (see Phase 8). Implement it only if a test or debug path needs affine coordinates. `FieldInv` (Fermat, a^(p-2)) exists for tests and debugging (affine point checks in Phase 7); verification does not call it.
 - [x] All operations work in place on preallocated buffers; no per-call allocations. Multiply, square and inverse take a caller-owned `ulong[U256.ProductScratchLength]` (32): product at [0..15], operand copies at [16..31].
-- [ ] Tests pass in EditMode and in Udon.
+- [x] Tests pass in EditMode and in Udon (149 passed, 0 failed in both).
 
 ### Phase 6: Scalar arithmetic mod n
 
