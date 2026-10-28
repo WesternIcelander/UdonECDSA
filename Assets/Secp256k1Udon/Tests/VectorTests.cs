@@ -97,6 +97,9 @@ namespace Secp256k1Udon.Tests
                 else { EndSlicedRound(); EndSliced(); }
                 return true;
             }
+            index -= 4;
+            // Phase 10: NonceCount nonces in batches, one batch per step.
+            if (index < NonceCount / NonceBatch) { CheckNonces(index); return true; }
             return Finish();
         }
 
@@ -1266,6 +1269,66 @@ namespace Secp256k1Udon.Tests
                 if (entry["name"].String == entryName) return entry[key].String;
             }
             return null;
+        }
+
+        private const int NonceCount = 10000;
+        private const int NonceBatch = 1000;
+        private DataDictionary nonceSeen;
+        private int nonceBadFormat;
+        private int nonceDuplicates;
+        private string nonceFirstBad;
+
+        // Generates one batch of nonces, checking each against
+        // ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ and against every earlier nonce.
+        // The last batch reports the totals.
+        private void CheckNonces(int batch)
+        {
+            if (batch == 0)
+            {
+                nonceSeen = new DataDictionary();
+                nonceBadFormat = 0;
+                nonceDuplicates = 0;
+                nonceFirstBad = "";
+            }
+            for (int i = 0; i < NonceBatch; i++)
+            {
+                string nonce = NonceGenerator.NewNonce();
+                if (!IsUuidV4(nonce))
+                {
+                    if (nonceBadFormat == 0) nonceFirstBad = nonce;
+                    nonceBadFormat++;
+                }
+                if (nonceSeen.ContainsKey(nonce)) nonceDuplicates++;
+                else nonceSeen.Add(nonce, true);
+            }
+            if (batch == 0) Report("nonce example " + NonceGenerator.NewNonce(), true, "");
+            if (batch + 1 < NonceCount / NonceBatch) return;
+
+            Report("nonce format (" + NonceCount + " nonces)", nonceBadFormat == 0,
+                nonceBadFormat + " malformed, first: " + nonceFirstBad);
+            Report("nonce uniqueness (" + NonceCount + " nonces)", nonceDuplicates == 0 && nonceSeen.Count == NonceCount,
+                nonceDuplicates + " duplicates");
+            Report("nonce rejects malformed", !IsUuidV4("BCCEE525-DF6D-4611-9C88-7B56E31BF88C")
+                && !IsUuidV4("bccee525-df6d-1611-9c88-7b56e31bf88c") && !IsUuidV4("bccee525-df6d-4611-7c88-7b56e31bf88c")
+                && !IsUuidV4("bccee525df6d46119c887b56e31bf88c") && IsUuidV4("bccee525-df6d-4611-9c88-7b56e31bf88c"),
+                "format check accepts a malformed nonce or rejects a valid one");
+            nonceSeen = null;
+        }
+
+        private bool IsUuidV4(string s)
+        {
+            if (s == null || s.Length != 36) return false;
+            for (int i = 0; i < 36; i++)
+            {
+                char c = s[i];
+                if (i == 8 || i == 13 || i == 18 || i == 23)
+                {
+                    if (c != '-') return false;
+                }
+                else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+            }
+            char variant = s[19];
+            return s[14] == '4' && (variant == '8' || variant == '9' || variant == 'a' || variant == 'b');
         }
 
         private void Report(string name, bool ok, string failDetail)

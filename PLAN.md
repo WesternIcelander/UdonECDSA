@@ -182,9 +182,9 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 ### Phase 10: Nonce generator
 
-- [ ] If `System.Guid.NewGuid()` is exposed, use `NewGuid().ToString()` (lowercase "D" format) and verify it is lowercase.
-- [ ] Otherwise: SHA-256 over a byte buffer combining several entropy sources (several `UnityEngine.Random` values, `DateTime.UtcNow.Ticks`, `Time.realtimeSinceStartup`, network server time, local player ID and display name). Take the first 16 bytes, set the UUID version-4 and variant bits, format as lowercase 8-4-4-4-12.
-- [ ] Test: generate 10,000 nonces, confirm format (regex `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`) and no duplicates.
+- [x] If `System.Guid.NewGuid()` is exposed, use `NewGuid().ToString()` (lowercase "D" format) and verify it is lowercase. It is (Phase 0): `NonceGenerator.NewNonce()` (static, no behaviour or scratch needed) returns `Guid.NewGuid().ToString().ToLowerInvariant()`; the lowercasing is a safeguard, Udon already gives lowercase.
+- [x] Not needed, since `Guid.NewGuid()` is exposed. Otherwise: SHA-256 over a byte buffer combining several entropy sources (several `UnityEngine.Random` values, `DateTime.UtcNow.Ticks`, `Time.realtimeSinceStartup`, network server time, local player ID and display name). Take the first 16 bytes, set the UUID version-4 and variant bits, format as lowercase 8-4-4-4-12.
+- [x] Test: generate 10,000 nonces, confirm format (regex `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`) and no duplicates. `VectorTests` generates them in 10 steps of 1,000, checks the format by hand (no Regex in Udon) and duplicates with a `DataDictionary`, and checks that the format check rejects uppercase, a wrong version, a wrong variant and a missing dash. Tests pass in EditMode and in Udon (504 passed, 0 failed).
 
 ### Phase 11: Packaging and documentation
 
