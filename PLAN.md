@@ -205,7 +205,9 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 ## Measurements
 
-All in Unity 2022.3.22f1 Play Mode (Udon VM in the editor, desktop PC); a VRChat client is expected to be similar.
+Measured in Unity 2022.3.22f1 Play Mode (Udon VM in the editor, desktop PC), except where marked as client.
+
+- VRChat desktop client (SDK Build & Test of `TestScene`, same PC, 2026-10-28): all tests pass (500 passed, 0 failed). Udon runs about 1.6 times slower than in the editor: blocking verify 510 ms, scalar inverse 66 ms, double-and-add step about 1.5 ms. At N = 1 a sliced verification still takes 303–306 frames, with a mean slice of at most 1.55 ms and a longest slice of 3.31 ms; at N = 7 the mean slice is 9.5 ms. 56 queued requests at N = 1 took about 3.7 minutes, about 4 s each (roughly 75 fps). N = 1 stays the default: it is the smallest setting and still under the 2 ms target on average in the client.
 
 - Full verification time in Udon (blocking): about 290 ms (`TimingProbe`, `Secp256k1.VerifyHash`). Building blocks: field multiply 0.05 ms, square 0.04 ms, scalar multiply 0.10 ms, scalar inverse 40 ms, point double 0.41 ms, mixed add 0.61 ms, Jacobian add 0.88 ms, one double-and-add step about 0.9 ms on average (up to 1.3 ms), SHA-256 about 0.23 ms per 64-byte block, UTF-8 encoding about 0.6 µs per character.
 - Iterations per frame chosen: N = 1 (`iterationsPerFrame`). At N = 2 a typical slice was about 2.0 ms and the worst about 2.6 ms (two doubles and two Jacobian adds), above the 2 ms target, for half the frames (155).
