@@ -188,7 +188,7 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 ### Phase 11: Packaging and documentation
 
-- [ ] Add a `README.md` in the library folder covering: what the library does and does not do, the signing procedure the authority must follow, how to set the public key, the blocking and sliced APIs with a minimal UdonSharp usage example for each, `NewNonce()`, the measured performance, and which folders to copy into another project (library only, not tests or tools).
+- [x] Add a `README.md` in the library folder covering: what the library does and does not do, the signing procedure the authority must follow, how to set the public key, the blocking and sliced APIs with a minimal UdonSharp usage example for each, `NewNonce()`, the measured performance, and which folders to copy into another project (library only, not tests or tools). `Assets/Secp256k1Udon/README.md`.
 - [ ] Confirm the library compiles in a clean project with only the VRChat Worlds SDK and UdonSharp installed (no dependency on test code or `Tools/`).
 - [ ] Final full test run, EditMode and Udon, all passing.
 
