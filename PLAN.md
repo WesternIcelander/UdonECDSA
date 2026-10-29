@@ -190,7 +190,7 @@ Inputs are `data` (opaque string) and `signatureHex`. The library does not inspe
 
 - [x] Add a `README.md` in the library folder covering: what the library does and does not do, the signing procedure the authority must follow, how to set the public key, the blocking and sliced APIs with a minimal UdonSharp usage example for each, `NewNonce()`, the measured performance, and which folders to copy into another project (library only, not tests or tools). `Assets/Secp256k1Udon/README.md`.
 - [x] Confirm the library compiles in a clean project with only the VRChat Worlds SDK and UdonSharp installed (no dependency on test code or `Tools/`). A fresh Unity 2022.3.22f1 project with only the Worlds SDK 3.10.5 packages (and the default Unity ones) and the library files listed in the README (no `Tests/`), plus the README's three usage examples as scripts in `Assembly-CSharp`: in batch mode, the C# compile and a full UdonSharp compile succeeded with no errors or warnings from the library or the examples. Keep the throwaway project at a short path: in a long one (such as a deep temp folder) Unity and UdonSharp fail on paths over 260 characters.
-- [ ] Final full test run, EditMode and Udon, all passing.
+- [x] Final full test run, EditMode and Udon, all passing. 504 passed, 0 failed in both (plus `Phase0Probe` 15/15). The one error logged in Play Mode is the test scene's verifier with a deliberately invalid key.
 
 ## Phase 0 findings
 
